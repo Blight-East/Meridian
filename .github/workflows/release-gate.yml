@@ -1,0 +1,194 @@
+name: release-gate
+
+# PayFlux release hard gate.
+# Runs on every push to release/* branches. Refuses to publish a deployable
+# artifact unless deploy/ci/gate.sh exits 0 against the exact SHA being
+# released. Failure = pipeline hard stop. No artifact is uploaded on failure.
+#
+# Trust model: Sigstore keyless. The release fingerprint is signed by
+# cosign using the GitHub Actions OIDC token of THIS workflow. There is
+# no private key anywhere; verification at deploy time relies on the
+# Sigstore Fulcio root + GitHub OIDC issuer + Rekor transparency log.
+
+on:
+  push:
+    branches:
+      - 'release/*'
+
+# Concurrency: never run two gates against the same release branch in parallel.
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+# Permissions:
+#   id-token: write   — REQUIRED so cosign can request an OIDC token from
+#                       https://token.actions.githubusercontent.com and
+#                       exchange it for a short-lived Fulcio cert.
+#   contents: read    — clone the repo at the release SHA.
+#   actions: read     — read prior-run metadata for the summary step.
+permissions:
+  id-token: write
+  contents: read
+  actions: read
+
+jobs:
+  gate:
+    name: hard gate
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+
+    env:
+      DEPLOY_SHA: ${{ github.sha }}
+      ART_DIR: deploy/artifacts
+      # Smoke-test endpoint MUST be the externally reachable preflight
+      # Stripe webhook URL (https://, public DNS, currently in recovery
+      # mode). Provided as a repo/org secret; the gate hard-fails if
+      # unset OR if the URL points at loopback/private/link-local.
+      STRIPE_WEBHOOK_PROBE_URL: ${{ secrets.STRIPE_WEBHOOK_PROBE_URL }}
+      ALERTMANAGER_RULES_PATH: deploy/observability/inflight_alert.yml
+      # Sigstore identity binding: the post-sign verifier in the gate
+      # requires the cert SAN to match this repo and the workflow ref
+      # regex below. These are deploy-time settings, not secrets.
+      RELEASE_OIDC_REPO: ${{ github.repository }}
+      RELEASE_OIDC_WORKFLOW_REF_REGEX: '^refs/heads/release/.*$'
+      # Tight identity binding — every value must match what cosign sees
+      # in the cert's GitHub OIDC claims. Drift in any of these = reject.
+      RELEASE_OIDC_WORKFLOW_NAME: 'release-gate'
+      RELEASE_OIDC_WORKFLOW_FILE: 'release-gate.yml'
+      RELEASE_OIDC_WORKFLOW_TRIGGER: 'push'
+      # Tell cosign which Fulcio + Rekor to use (defaults are public
+      # Sigstore; pin explicitly so a future cosign default change cannot
+      # silently move our trust root).
+      COSIGN_EXPERIMENTAL: '0'
+      SIGSTORE_FULCIO_URL: 'https://fulcio.sigstore.dev'
+      SIGSTORE_REKOR_URL:  'https://rekor.sigstore.dev'
+
+    steps:
+      - name: Checkout exact release SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify checked-out SHA matches DEPLOY_SHA
+        run: |
+          set -euo pipefail
+          ACTUAL="$(git rev-parse HEAD)"
+          if [ "$ACTUAL" != "${DEPLOY_SHA}" ]; then
+            echo "ABORT: checkout SHA $ACTUAL != DEPLOY_SHA ${DEPLOY_SHA}"
+            exit 1
+          fi
+          echo "checkout SHA verified: $ACTUAL"
+
+      - name: Install required system deps
+        # No openssl, no python, no node — the signing path no longer
+        # depends on openssl. Cosign is installed in a separate step.
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends \
+            bash curl jq grep postgresql-client redis-tools coreutils dnsutils
+          bash --version | head -n1
+          curl --version | head -n1
+          jq --version
+          psql --version
+          redis-cli --version
+          dig -v 2>&1 | head -n1 || true
+
+      - name: Install cosign (Sigstore signer/verifier)
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.2.4'
+
+      - name: Verify cosign binary identity
+        run: |
+          set -euo pipefail
+          cosign version
+          # Refuse if cosign cannot reach Fulcio/Rekor — better to fail
+          # the gate than silently sign without transparency.
+          curl -sSf -o /dev/null --max-time 5 "${SIGSTORE_FULCIO_URL}/api/v1/rootCert" \
+            || { echo "ABORT: cannot reach Fulcio at ${SIGSTORE_FULCIO_URL}"; exit 1; }
+          curl -sSf -o /dev/null --max-time 5 "${SIGSTORE_REKOR_URL}/api/v1/log" \
+            || { echo "ABORT: cannot reach Rekor at ${SIGSTORE_REKOR_URL}"; exit 1; }
+
+      - name: Refuse if probe secret is unset
+        run: |
+          set -euo pipefail
+          if [ -z "${STRIPE_WEBHOOK_PROBE_URL:-}" ]; then
+            echo "ABORT: STRIPE_WEBHOOK_PROBE_URL secret is required for the external webhook 503 smoke test"
+            exit 1
+          fi
+          echo "required secrets present"
+
+      - name: Ensure artifact dir exists
+        run: mkdir -p "${ART_DIR}"
+
+      - name: Run hard gate (deploy/ci/gate.sh)
+        # The gate runs all five checks INCLUDING cosign signing in step 5.
+        # Any non-zero exit aborts before artifact upload.
+        run: |
+          set -euo pipefail
+          chmod +x \
+            deploy/ci/gate.sh \
+            deploy/fingerprint/build_release_fingerprint.sh \
+            deploy/fingerprint/sign_release_fingerprint.sh \
+            deploy/fingerprint/runtime_verify.sh \
+            deploy/fingerprint/runtime_verify_loop.sh \
+            deploy/fingerprint/no_legacy_trust.sh
+          bash deploy/ci/gate.sh
+
+      - name: Upload deployable artifact (only on gate success)
+        # Gate failure = no artifact published. There is no manual
+        # override path. The bundle includes the cosign signature, the
+        # Fulcio cert, the Rekor entry reference, and the offline bundle
+        # — all four travel together so the deploy host can verify.
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payflux-release-${{ github.sha }}
+          path: |
+            deploy/artifacts/release_fingerprint.json
+            deploy/artifacts/release_fingerprint.json.sig
+            deploy/artifacts/release_fingerprint.json.crt
+            deploy/artifacts/release_fingerprint.json.bundle
+            deploy/artifacts/release_fingerprint.json.rekor
+            deploy/artifacts/release_fingerprint.manifest
+            deploy/artifacts/gate_${{ github.sha }}.log
+            deploy/artifacts/h2_regrep_${{ github.sha }}.log
+            deploy/artifacts/inflight_alert_test_${{ github.sha }}.evidence
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload gate log on failure (audit trail)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: payflux-release-FAILED-${{ github.sha }}
+          path: |
+            deploy/artifacts/gate_${{ github.sha }}.log
+            deploy/artifacts/h2_regrep_${{ github.sha }}.log
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## release-gate result"
+            echo ""
+            echo "- deploy_sha: \`${DEPLOY_SHA}\`"
+            echo "- result: ${{ job.status }}"
+            echo "- trust_root: Sigstore Fulcio + GitHub OIDC (no in-repo key)"
+            if [ -f "${ART_DIR}/release_fingerprint.json" ]; then
+              FP="$(jq -r '.fingerprint' "${ART_DIR}/release_fingerprint.json" 2>/dev/null || echo unknown)"
+              echo "- fingerprint: \`${FP}\`"
+            fi
+            if [ -f "${ART_DIR}/release_fingerprint.json.rekor" ]; then
+              IDX="$(jq -r '.log_index' "${ART_DIR}/release_fingerprint.json.rekor" 2>/dev/null || echo unknown)"
+              URL="$(jq -r '.entry_url' "${ART_DIR}/release_fingerprint.json.rekor" 2>/dev/null || echo unknown)"
+              echo "- rekor_index: \`${IDX}\`"
+              echo "- rekor_entry: ${URL}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

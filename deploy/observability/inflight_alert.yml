@@ -1,0 +1,25 @@
+# deploy/observability/inflight_alert.yml
+#
+# Alert rule for the at-least-once inflight list.
+# Any item stuck in agent_tasks_inflight for > 10 minutes indicates a
+# crashed or hung worker. This must fire as P1 so an SRE can inspect
+# and either replay or discard the stuck task.
+
+groups:
+  - name: payflux_queue_safety
+    rules:
+      - alert: AgentTasksInflightStuck
+        expr: redis_list_length{key="agent_tasks_inflight"} > 0
+        for: 600s
+        labels:
+          severity: P1
+          team: platform
+        annotations:
+          summary: "Inflight queue is non-empty for >10m — possible lost task"
+          description: >
+            The agent_tasks_inflight list has had items for over 10 minutes.
+            This means a worker picked up a task but never completed or
+            acknowledged it. Investigate whether the worker crashed, timed
+            out, or is hung. Items left in inflight should be triaged and
+            either replayed or moved to the dead-letter queue.
+          runbook: "https://payflux.dev/ops/runbook/inflight-stuck"
