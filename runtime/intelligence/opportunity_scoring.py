@@ -135,16 +135,23 @@ def score_merchants(limit=100):
             )
 
             # Determine the dominant processor for urgency weighting.
-            # Cheap single-row scan over the last 200 signals for the merchant.
+            # Filter to signals that actually name a processor so that non-
+            # processor signals don't drown out the CASE buckets — otherwise
+            # the 'other' bucket always wins and processor_weight collapses
+            # to the default of 5.
             dominant_processor = conn.execute(text("""
                 SELECT CASE
                          WHEN LOWER(content) LIKE '%stripe%' THEN 'stripe'
                          WHEN LOWER(content) LIKE '%paypal%' THEN 'paypal'
                          WHEN LOWER(content) LIKE '%square%' THEN 'square'
-                         ELSE 'other'
                        END AS processor, COUNT(*) AS cnt
                 FROM signals
                 WHERE merchant_id = :merchant_id
+                  AND (
+                    LOWER(content) LIKE '%stripe%'
+                    OR LOWER(content) LIKE '%paypal%'
+                    OR LOWER(content) LIKE '%square%'
+                  )
                 GROUP BY 1
                 ORDER BY cnt DESC
                 LIMIT 1
