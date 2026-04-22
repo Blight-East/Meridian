@@ -216,7 +216,7 @@ def cluster_signals():
                         WHERE id = :cid
                     """), {
                         "size": len(signal_ids),
-                        "ids": json.dumps(signal_ids),
+                        "ids": signal_ids,
                         "cid": existing[0],
                     })
                 else:
@@ -226,7 +226,7 @@ def cluster_signals():
                     """), {
                         "topic": topic,
                         "size": len(signal_ids),
-                        "ids": json.dumps(signal_ids),
+                        "ids": signal_ids,
                     })
                     save_event("cluster_created", {"topic": topic, "size": len(signal_ids)})
                 created += 1
