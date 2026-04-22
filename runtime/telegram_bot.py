@@ -2592,6 +2592,14 @@ def run(token):
                      ("approve_gmail_send", approve_gmail_send),
                      ("approve_reddit_send", approve_reddit_send)]:
         app.add_handler(CommandHandler(name, fn))
+    # Meridian tool-fix pack: deterministic slash-command surface over
+    # operator_commands.  See runtime/conversation/slash_commands.py.
+    # Default ON; set MERIDIAN_SLASH_COMMANDS_ENABLED=false to disable.
+    try:
+        from runtime.conversation.slash_commands import register_slash_commands
+        register_slash_commands(app, _require_authorized, _reply_and_record)
+    except Exception as exc:
+        logger.warning("slash-command registration failed: %s", exc)
     app.add_handler(MessageHandler(filters.PHOTO, chat_image))
     app.add_handler(MessageHandler(filters.Document.ALL, chat_image))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
