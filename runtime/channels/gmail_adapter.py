@@ -213,13 +213,17 @@ class GmailAdapter(ChannelAdapter):
                     subject=(draft.subject or "")[:120],
                     thread_id=draft.thread_id,
                 )
+                # ok=False is intentional.  The channel service treats
+                # ok-true results as `envelope_status="sent"` and writes
+                # journal entries — neither should happen for a dry run.
                 return ActionResult(
-                    True,
+                    False,
                     "dry_run",
                     draft.target_id,
                     draft.thread_id,
-                    "dry-run",
+                    "",
                     {"dry_run": True},
+                    error="MERIDIAN_UPGRADE_DRY_RUN enabled; send skipped",
                 )
         message = MIMEText(text_body)
         message["to"] = recipient

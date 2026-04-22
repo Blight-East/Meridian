@@ -828,12 +828,31 @@ def send_outreach_for_opportunity(
         if row.get("status") in {"sent", "won", "lost", "ignored"} and row.get("follow_up_due_at") and not _follow_up_allowed(dict(row)):
             return {"error": "Outreach already sent and no follow-up is due yet"}
 
-        result = _send_gmail_message(
-            to_email=row.get("contact_email") or "",
-            subject=row.get("subject") or "",
-            body=row.get("body") or "",
-            thread_id=row.get("gmail_thread_id") or "",
-        )
+        try:
+            result = _send_gmail_message(
+                to_email=row.get("contact_email") or "",
+                subject=row.get("subject") or "",
+                body=row.get("body") or "",
+                thread_id=row.get("gmail_thread_id") or "",
+            )
+        except _upgrade.OutreachDryRunSkipped as dry:
+            # MERIDIAN_UPGRADE_DRY_RUN path: no Gmail send, no DB mutation
+            # to status/approval_state, no log_action, no save_event, no
+            # journal entry, no deal-lifecycle transition.  The row stays
+            # in its pre-send state so a real send can be attempted later
+            # once the flag is flipped off.
+            _upgrade.log_upgrade(
+                "send_outreach_dry_run_skipped",
+                opportunity_id=int(opportunity_id),
+                to_email=dry.to_email,
+                thread_id=dry.thread_id,
+            )
+            return {
+                "status": "dry_run",
+                "dry_run": True,
+                "opportunity_id": int(opportunity_id),
+                "message": "Skipped: MERIDIAN_UPGRADE_DRY_RUN is enabled",
+            }
         sent_at = datetime.now(timezone.utc)
         follow_up_due_at = sent_at + timedelta(days=FOLLOW_UP_DAYS)
         metadata = _json_dict(row.get("metadata_json"))
@@ -2959,9 +2978,13 @@ def _send_gmail_message(*, to_email: str, subject: str, body: str, thread_id: st
     adapter = GmailAdapter()
     if _recipient_is_denied(to_email, sender_email=adapter.sender_email):
         raise ValueError("Recipient is blocked by outreach denylist")
-    # STEP 5 — dry-run short-circuits the outbound Gmail API call when
-    # MERIDIAN_UPGRADE_DRY_RUN is ON.  Everything upstream (DB writes,
-    # approval state) still runs as normal.
+    # STEP 5 — dry-run raises `OutreachDryRunSkipped` BEFORE the outbound
+    # Gmail API call.  The caller MUST catch this exception explicitly to
+    # treat the dry-run as a skip; otherwise it propagates as an error and
+    # the opportunity is NOT marked as sent (the safe failure mode).  This
+    # prevents downstream DB writes (status='sent', journal entries, deal
+    # lifecycle transitions) from running against a send that never
+    # happened.
     if _upgrade.is_dry_run_enabled():
         _upgrade.log_upgrade(
             "gmail_send_dry_run",
@@ -2970,11 +2993,12 @@ def _send_gmail_message(*, to_email: str, subject: str, body: str, thread_id: st
             thread_id=thread_id or "",
             body_preview=(body or "")[:160],
         )
-        return {
-            "message_id": "dry-run",
-            "thread_id": thread_id,
-            "dry_run": True,
-        }
+        raise _upgrade.OutreachDryRunSkipped(
+            to_email=to_email,
+            subject=subject,
+            thread_id=thread_id,
+            body_preview=(body or "")[:160],
+        )
     message = MIMEText(body)
     message["to"] = to_email
     message["subject"] = subject

@@ -28,6 +28,34 @@ from typing import Any, Iterable
 _log = logging.getLogger("meridian.conversion_upgrade")
 
 
+class OutreachDryRunSkipped(Exception):
+    """
+    Raised from inside the Gmail send helpers when
+    `MERIDIAN_UPGRADE_DRY_RUN=true` to force the send path to abort BEFORE
+    the caller performs any "mark as sent" DB writes.  Callers that want
+    the dry-run to succeed-without-sending must catch this exception
+    explicitly — otherwise they will bubble the dry-run as an error, which
+    is the safe failure mode.
+
+    Attributes mirror the would-have-been request so callers can log /
+    journal them.  Never raised when the flag is OFF.
+    """
+
+    def __init__(
+        self,
+        *,
+        to_email: str = "",
+        subject: str = "",
+        thread_id: str = "",
+        body_preview: str = "",
+    ) -> None:
+        super().__init__("MERIDIAN_UPGRADE_DRY_RUN is enabled; send was skipped")
+        self.to_email = to_email
+        self.subject = subject
+        self.thread_id = thread_id
+        self.body_preview = body_preview
+
+
 # ---------------------------------------------------------------------------
 # Flag helpers
 # ---------------------------------------------------------------------------
