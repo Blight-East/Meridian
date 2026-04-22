@@ -6,7 +6,6 @@ from memory.structured.db import save_event
 from config.logging_config import get_logger
 from collections import defaultdict
 from entity_taxonomy import classify_entity, CLASS_CONSUMER_COMPLAINT, CLASS_AFFILIATE_DISTRESS, CLASS_PROCESSOR_DISTRESS, CLASS_NON_MERCHANT
-from merchant_identity import resolve_merchant_identity
 import re
 
 logger = get_logger("clustering")
@@ -135,6 +134,7 @@ def classify_signal(content_lower):
 
 
 def cluster_signals():
+    logger.info("Signal clustering started")
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT id, content, priority_score
@@ -172,18 +172,16 @@ def cluster_signals():
             clusters["Affiliate Payout Issues"].append(sig["id"])
             continue
 
-        # Standard keyword-based classification
-        topic = classify_signal(content_lower)
-        if topic:
-            clusters[topic].append(sig["id"])
-        else:
-            unclassified.append(sig)
-
-        # Merchant identity resolution — runs for all signals
         try:
-            resolve_merchant_identity(sig["id"], content_raw, sig.get("priority_score", 0))
+            # Standard keyword-based classification
+            topic = classify_signal(content_lower)
+            if topic:
+                clusters[topic].append(sig["id"])
+            else:
+                unclassified.append(sig)
         except Exception as e:
-            logger.debug(f"Merchant identity resolution skipped for signal {sig['id']}: {e}")
+            logger.error(f"Error processing signal {sig.get('id')}: {e}")
+            continue
 
     # For remaining unclassified signals, attempt processor-based grouping
     for sig in unclassified:
@@ -201,9 +199,6 @@ def cluster_signals():
     # Clear old clusters and upsert current ones
     created = 0
     with engine.connect() as conn:
-        conn.execute(text("DELETE FROM clusters WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '48 hours'"))
-        conn.commit()
-
         for topic, signal_ids in clusters.items():
             if len(signal_ids) > 0:
                 # Update existing cluster with same topic from this cycle, or insert new
@@ -237,10 +232,15 @@ def cluster_signals():
                 created += 1
         conn.commit()
 
+        # Delete old clusters after inserting new ones
+        conn.execute(text("DELETE FROM clusters WHERE created_at < CURRENT_TIMESTAMP - INTERVAL '48 hours'"))
+        conn.commit()
+
     classified_count = sum(len(ids) for t, ids in clusters.items() if t != "Unclassified merchant distress")
     unclassified_count = len(clusters.get("Unclassified merchant distress", []))
 
     logger.info(f"Created {created} clusters from {len(signals)} signals ({classified_count} classified, {unclassified_count} unclassified, {consumer_filtered} consumer complaints filtered)")
+    logger.info("Signal clustering completed")
     return {"clusters_created": created, "total_signals": len(signals), "classified": classified_count, "unclassified": unclassified_count, "consumer_filtered": consumer_filtered}
 
 
