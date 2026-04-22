@@ -60,6 +60,13 @@ HIGH_VALUE_DISTRESS_SCORE = float(os.getenv("AGENT_FLUX_HIGH_VALUE_DISTRESS_SCOR
 HIGH_CONFIDENCE_CONTACT_THRESHOLD = float(os.getenv("AGENT_FLUX_HIGH_CONFIDENCE_CONTACT_THRESHOLD", "0.85"))
 USABLE_FALLBACK_CONTACT_THRESHOLD = float(os.getenv("AGENT_FLUX_USABLE_CONTACT_THRESHOLD", "0.64"))
 MAX_PERSISTED_CANDIDATES = 5
+# Hard per-merchant deadline for a full discovery pass (site crawl + Hunter + fallback).
+# Prevents one slow merchant from consuming the 300s scheduler task budget.
+MERCHANT_DISCOVERY_DEADLINE_SECONDS = int(os.getenv("AGENT_FLUX_CONTACT_DISCOVERY_DEADLINE", "45"))
+# Role-account prefixes used as a last-resort pattern fallback when no real
+# contact can be discovered. Persisted at low confidence; email_verified=False.
+ROLE_EMAIL_FALLBACK_PREFIXES = ("info", "support", "hello", "contact", "sales")
+ROLE_EMAIL_FALLBACK_CONFIDENCE = float(os.getenv("AGENT_FLUX_ROLE_FALLBACK_CONFIDENCE", "0.30"))
 
 TRUSTED_UPGRADE_METHODS = {
     "website:contact_page",
@@ -1233,6 +1240,44 @@ def _deepening_summary(context, candidates, pages_checked, page_types_checked, b
     }
 
 
+def _build_pattern_fallback_candidates(merchant_domain, existing_emails):
+    """Last-resort role-account guesses so outreach isn't blocked on zero contacts.
+
+    Returns a list of low-confidence candidate dicts (confidence=0.30,
+    email_verified=False). Never returns emails already present in
+    `existing_emails`.
+    """
+    if not merchant_domain:
+        return []
+    existing_lower = {(e or "").lower() for e in existing_emails or []}
+    out = []
+    for prefix in ROLE_EMAIL_FALLBACK_PREFIXES:
+        email = f"{prefix}@{merchant_domain}".lower()
+        if email in existing_lower:
+            continue
+        out.append({
+            "email": email,
+            "local_part": prefix,
+            "email_domain": merchant_domain,
+            "page_type": "pattern_fallback",
+            "page_url": None,
+            "page_priority": 9,
+            "crawl_step": 99,
+            "source": "pattern_guess",
+            "contact_name": None,
+            "role_hint": "role_account",
+            "same_domain": True,
+            "explicit_on_site": False,
+            "email_verified": False,
+            "confidence": ROLE_EMAIL_FALLBACK_CONFIDENCE,
+            "role_aligned": True,
+            "render_mode": None,
+            "source_quality_tier": 0,
+            "extraction_confidence": None,
+        })
+    return out
+
+
 def discover_contacts_for_merchant(
     merchant_id,
     opportunity_id=None,
@@ -1263,19 +1308,37 @@ def discover_contacts_for_merchant(
     merchant_domain = context["merchant_domain"]
     merchant_name = context["merchant_name"] or merchant_domain
 
+    started_at = time.time()
+    deadline_ts = started_at + MERCHANT_DISCOVERY_DEADLINE_SECONDS
+    logger.info(
+        f"[contact_discovery] start merchant_id={merchant_id} domain={merchant_domain} "
+        f"deadline={MERCHANT_DISCOVERY_DEADLINE_SECONDS}s"
+    )
+
     # ── PayFlux Site Discovery Engine ────────────────────────────────────
     try:
         from intelligence.site_discovery_engine import run_site_discovery
     except ImportError:
         from runtime.intelligence.site_discovery_engine import run_site_discovery
 
-    crawl_result = run_site_discovery(
-        domain=merchant_domain,
-        merchant_domain=merchant_domain,
-        existing_emails=set(context["existing_emails"]),
-        target_prefixes=context["target_context"]["target_prefixes"],
-        mx_servers=get_mx_servers(merchant_domain) if validate_email_domain(merchant_domain) else [],
-    )
+    try:
+        crawl_result = run_site_discovery(
+            domain=merchant_domain,
+            merchant_domain=merchant_domain,
+            existing_emails=set(context["existing_emails"]),
+            target_prefixes=context["target_context"]["target_prefixes"],
+            mx_servers=get_mx_servers(merchant_domain) if validate_email_domain(merchant_domain) else [],
+            deadline_ts=deadline_ts,
+        )
+    except TypeError:
+        # Older signature without deadline_ts — fall back gracefully.
+        crawl_result = run_site_discovery(
+            domain=merchant_domain,
+            merchant_domain=merchant_domain,
+            existing_emails=set(context["existing_emails"]),
+            target_prefixes=context["target_context"]["target_prefixes"],
+            mx_servers=get_mx_servers(merchant_domain) if validate_email_domain(merchant_domain) else [],
+        )
 
     if crawl_result is None:
         # ── Hunter.io fallback when site crawl completely fails ──────────
@@ -1297,7 +1360,31 @@ def discover_contacts_for_merchant(
                     conn.commit()
                 summary = _deepening_summary(context, hunter_filtered, 0, ["hunter_io"], hunter_filtered[0])
                 save_event("merchant_contact_deepening_run", summary)
+                elapsed = time.time() - started_at
+                logger.info(
+                    f"[contact_discovery] done merchant_id={merchant_id} domain={merchant_domain} "
+                    f"source=hunter_io found={len(hunter_filtered)} elapsed={elapsed:.1f}s"
+                )
                 return min(MAX_PERSISTED_CANDIDATES, len(hunter_filtered))
+
+        # ── Pattern fallback when both site crawl and Hunter.io fail ─────
+        pattern_candidates = _build_pattern_fallback_candidates(
+            merchant_domain, context["existing_emails"]
+        )
+        if pattern_candidates:
+            with engine.connect() as conn:
+                _persist_candidates(conn, merchant_id, pattern_candidates)
+                conn.commit()
+            summary = _deepening_summary(
+                context, pattern_candidates, 0, ["pattern_fallback"], pattern_candidates[0]
+            )
+            save_event("merchant_contact_deepening_run", summary)
+            elapsed = time.time() - started_at
+            logger.info(
+                f"[contact_discovery] done merchant_id={merchant_id} domain={merchant_domain} "
+                f"source=pattern_fallback found={len(pattern_candidates)} elapsed={elapsed:.1f}s"
+            )
+            return min(MAX_PERSISTED_CANDIDATES, len(pattern_candidates))
 
         summary = {
             "merchant_id": int(context["merchant_id"]),
@@ -1318,7 +1405,11 @@ def discover_contacts_for_merchant(
             "target_roles": list(context["target_context"]["target_roles"]),
         }
         save_event("merchant_contact_deepening_run", summary)
-        logger.info(f"Deepening failed to fetch homepage for {merchant_name} ({merchant_domain})")
+        elapsed = time.time() - started_at
+        logger.info(
+            f"[contact_discovery] done merchant_id={merchant_id} domain={merchant_domain} "
+            f"source=none found=0 elapsed={elapsed:.1f}s (homepage fetch failed)"
+        )
         return 0
 
     pages_checked = crawl_result["pages_checked"]
@@ -1354,6 +1445,13 @@ def discover_contacts_for_merchant(
                 logger.info(f"Hunter.io added {hunter_added} new candidates for {merchant_domain}")
                 page_types_checked = list(set(page_types_checked + ["hunter_io"]))
 
+    # ── Pattern fallback when crawl + Hunter still produced nothing ──────
+    if not candidate_bucket:
+        for pc in _build_pattern_fallback_candidates(merchant_domain, context["existing_emails"]):
+            _merge_candidate(candidate_bucket, pc)
+        if candidate_bucket and "pattern_fallback" not in page_types_checked:
+            page_types_checked = list(page_types_checked) + ["pattern_fallback"]
+
     ranked_candidates = sorted(candidate_bucket.values(), key=_candidate_rank_key, reverse=True)
     best_candidate = ranked_candidates[0] if ranked_candidates else {}
 
@@ -1386,9 +1484,12 @@ def discover_contacts_for_merchant(
     except Exception as le:
         logger.error(f"Reward hook failed [contact_selection] merchant_id={merchant_id}: {type(le).__name__}: {le}")
 
+    elapsed = time.time() - started_at
+    top_source = (best_candidate or {}).get("source") or (page_types_checked[0] if page_types_checked else "none")
     logger.info(
-        f"Merchant contact deepening complete for {merchant_name} "
-        f"(domain={merchant_domain}, outcome={summary['outcome']}, candidates={len(final_candidates)})"
+        f"[contact_discovery] done merchant_id={merchant_id} domain={merchant_domain} "
+        f"source={top_source} found={len(final_candidates)} elapsed={elapsed:.1f}s "
+        f"outcome={summary['outcome']}"
     )
     return min(MAX_PERSISTED_CANDIDATES, len(final_candidates))
 
@@ -1557,8 +1658,14 @@ def run_contact_discovery():
     total_contacts = 0
     failures = 0
     processed = 0
+    batch_started_at = time.time()
+    logger.info(
+        f"[contact_discovery] batch start: {min(len(eligible), BATCH_SIZE)} merchants "
+        f"(per-merchant deadline={MERCHANT_DISCOVERY_DEADLINE_SECONDS}s)"
+    )
     for context in eligible[:BATCH_SIZE]:
         processed += 1
+        merchant_started = time.time()
         try:
             total_contacts += discover_contacts_for_merchant(
                 context["merchant_id"],
@@ -1566,17 +1673,28 @@ def run_contact_discovery():
             )
         except Exception as exc:
             logger.error(
-                f"merchant_contact_deepening failed for merchant_id={context['merchant_id']} "
-                f"domain={context['merchant_domain']}: {exc}"
+                f"[contact_discovery] merchant_id={context['merchant_id']} "
+                f"domain={context['merchant_domain']} failed after "
+                f"{time.time() - merchant_started:.1f}s: {exc}",
+                exc_info=True,
             )
             r.incr("contact_discovery_failures_24h")
             failures += 1
     
     if total_contacts > 0:
         r.incrby("contacts_found_24h", total_contacts)
-        
-    result = {"merchants_processed": processed, "contacts_found": total_contacts, "failures": failures}
-    logger.info(f"merchant_contact_deepening run: {result}")
+
+    batch_elapsed = time.time() - batch_started_at
+    result = {
+        "merchants_processed": processed,
+        "contacts_found": total_contacts,
+        "failures": failures,
+        "elapsed_seconds": round(batch_elapsed, 1),
+    }
+    logger.info(
+        f"[contact_discovery] batch done: processed={processed} contacts_found={total_contacts} "
+        f"failures={failures} elapsed={batch_elapsed:.1f}s"
+    )
     return result
 
 

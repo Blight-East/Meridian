@@ -719,12 +719,16 @@ def _assign_source_quality_tier(source, same_domain):
 # Main Entry Point
 # ═════════════════════════════════════════════════════════════════════════════
 
-def run_site_discovery(*, domain, merchant_domain, existing_emails, target_prefixes, mx_servers):
+def run_site_discovery(*, domain, merchant_domain, existing_emails, target_prefixes, mx_servers, deadline_ts=None):
     """
     Crawl a single merchant domain for contact discovery.
 
     Returns a CrawlResult dict with structured candidates compatible with
     contact_discovery._merge_candidate, or None if homepage fetch fails.
+
+    `deadline_ts`, when provided, is an absolute `time.time()` cutoff. The
+    per-page crawl loop checks it before each fetch and bails early rather
+    than blowing the scheduler's task-level SIGALRM timeout.
     """
     # Import contact_discovery functions for candidate building
     try:
@@ -850,6 +854,12 @@ def run_site_discovery(*, domain, merchant_domain, existing_emails, target_prefi
 
     # ── Step 4: Crawl discovered pages ──────────────────────────────────────
     for page_info in page_plan:
+        if deadline_ts is not None and time.time() >= deadline_ts:
+            logger.info(
+                f"Site discovery: deadline reached for {domain} after "
+                f"{pages_checked} pages — returning partial result"
+            )
+            break
         page_url = page_info["url"]
         page_type = page_info["page_type"]
         discovery_method = page_info["discovery_method"]
