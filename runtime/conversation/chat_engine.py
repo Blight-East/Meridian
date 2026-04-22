@@ -1285,8 +1285,10 @@ def call_anthropic(payload):
         except Exception as exc:  # noqa: BLE001 - surface the provider error shape
             message = str(exc)
             # Classify so downstream state tracking stays meaningful.
+            # Use word-level substrings (not bare "rate") to avoid false
+            # positives on words like "generate", "operate", "integrate".
             lowered = message.lower()
-            if "429" in message or "rate" in lowered:
+            if "429" in message or "rate limit" in lowered or "rate_limit" in lowered or "ratelimit" in lowered:
                 error_type = "rate_limit_error"
             elif "timed out" in lowered or "timeout" in lowered or "connection" in lowered:
                 error_type = "network_error"

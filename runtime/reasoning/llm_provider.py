@@ -224,6 +224,49 @@ def _translate_assistant_message(content: Any) -> Dict[str, Any]:
     return msg
 
 
+def _translate_user_multimodal(content: Any) -> Any:
+    """If a user message contains image blocks, emit the OpenAI multi-content
+    format (``[{"type":"text",...}, {"type":"image_url","image_url":...}]``).
+    Returns ``None`` when there are no image blocks so the caller can fall
+    back to plain flattening.
+    """
+    if not isinstance(content, list):
+        return None
+    has_image = any(
+        isinstance(b, dict) and b.get("type") == "image"
+        for b in content
+    )
+    if not has_image:
+        return None
+    parts: List[Dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            if isinstance(block, str) and block:
+                parts.append({"type": "text", "text": block})
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            text = block.get("text")
+            if text:
+                parts.append({"type": "text", "text": str(text)})
+        elif btype == "image":
+            source = block.get("source") or {}
+            stype = source.get("type")
+            if stype == "base64":
+                media_type = source.get("media_type") or "image/jpeg"
+                data = source.get("data") or ""
+                if data:
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{data}"},
+                    })
+            elif stype == "url":
+                url = source.get("url")
+                if url:
+                    parts.append({"type": "image_url", "image_url": {"url": str(url)}})
+    return parts or None
+
+
 def _translate_user_tool_results(content: Any) -> List[Dict[str, Any]]:
     """If a user message consists of ``tool_result`` blocks, emit one OpenAI
     ``{"role": "tool", ...}`` message per result. Returns an empty list when
@@ -282,6 +325,16 @@ def _anthropic_to_openai(payload: Dict[str, Any], resolved_model: str) -> Dict[s
                     ]).strip()
                     if residual_text:
                         messages.append({"role": "user", "content": residual_text})
+                continue
+
+            # Multi-modal user turn (image + optional text): emit OpenAI
+            # multi-content format so vision-capable providers (GitHub Models
+            # gpt-4.1*, etc.) see the image data. Text-only providers
+            # (e.g. NIM Llama 3.3) will either error or ignore images, in
+            # which case the fallback provider picks it up via call_llm.
+            mm_parts = _translate_user_multimodal(raw_content)
+            if mm_parts:
+                messages.append({"role": "user", "content": mm_parts})
                 continue
 
         if role not in ("system", "user", "assistant", "tool"):
