@@ -47,6 +47,7 @@ from runtime.ops.report_generator import generate_market_reports
 from runtime.ops.pipeline_diagnostics import run_pipeline_diagnostics
 from runtime.ops.operator_briefings import send_daily_operator_briefing, send_proactive_operator_updates
 from runtime.ops.telegram_delivery_watchdog import run_telegram_delivery_watchdog
+from runtime.ops.db_session_watchdog import run_db_session_watchdog
 from runtime.intelligence.payflux_intelligence import sync_payflux_intelligence
 from runtime.intelligence.cluster_investigation import investigate_unclassified_clusters
 from runtime.ops.pipeline_audit import audit_sales_pipeline
@@ -348,6 +349,8 @@ TASK_REGISTRY = [
     {"name": "update_merchant_risk_scores", "every": 60, "unit": "minutes", "fn": update_merchant_risk_scores, "group": "graph"},
     {"name": "run_pipeline_diagnostics", "every": 10, "unit": "minutes", "fn": run_pipeline_diagnostics, "group": "ops"},
     {"name": "run_telegram_delivery_watchdog", "every": 5, "unit": "minutes", "fn": run_telegram_delivery_watchdog, "group": "ops", "run_on_startup": True, "startup_priority": 8},
+    # DB hardening Phase 2 — 60s cadence, see runtime/ops/db_session_watchdog.py
+    {"name": "run_db_session_watchdog", "every": 1, "unit": "minutes", "fn": run_db_session_watchdog, "group": "ops", "run_on_startup": True, "startup_priority": 9},
     {"name": "run_gmail_triage_cycle", "every": 15, "unit": "minutes", "fn": run_gmail_triage_cycle, "group": "channels"},
     {"name": "run_reply_outcome_monitor", "every": 15, "unit": "minutes", "fn": run_reply_outcome_monitor, "group": "operator"},
     {"name": "run_reply_draft_monitor", "every": 15, "unit": "minutes", "fn": run_reply_draft_monitor, "group": "operator"},

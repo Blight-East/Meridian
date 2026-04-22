@@ -1584,7 +1584,14 @@ def _ensure_contact_discovery_schema(force=False):
     global _SCHEMA_READY
     if _SCHEMA_READY and not force:
         return
-    with engine.connect() as conn:
+    # DB hardening (Phase 1): serialize this batch across the fleet with a
+    # fleet-wide advisory lock so two cold-starting PM2 processes cannot
+    # race on the same 14 ALTERs.  When MERIDIAN_SCHEMA_MIGRATIONS_ENABLED
+    # is false the helper is a pass-through and behaviour is identical
+    # to before.
+    from runtime.ops.schema_migrations import with_advisory_lock as _with_lock
+
+    with _with_lock("contact_discovery_schema"), engine.connect() as conn:
         conn.execute(text("ALTER TABLE merchant_contacts ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE"))
         conn.execute(text("ALTER TABLE merchant_contacts ADD COLUMN IF NOT EXISTS local_part TEXT"))
         conn.execute(text("ALTER TABLE merchant_contacts ADD COLUMN IF NOT EXISTS email_domain TEXT"))
