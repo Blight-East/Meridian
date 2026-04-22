@@ -1261,73 +1261,54 @@ def _apply_output_quality_filter(text: str) -> str:
 
 
 def call_anthropic(payload):
-    """Call Anthropic API with retry and increased timeout."""
-    anthropic_api_key = _get_anthropic_api_key()
-    if not anthropic_api_key:
-        record_component_state(
-            "anthropic",
-            ttl=600,
-            anthropic_status="degraded",
-            last_error_at=utc_now_iso(),
-            last_error_type="missing_api_key",
-        )
-        return {"error": {"type": "missing_api_key", "message": "ANTHROPIC_API_KEY is not configured"}}
+    """Call the configured LLM provider with an Anthropic-shaped ``payload``.
 
-    headers = {
-        "x-api-key": anthropic_api_key,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-    }
+    The name is preserved for backwards compatibility with ~9 call sites. The
+    actual transport now goes through :mod:`runtime.reasoning.llm_provider`,
+    which routes to NVIDIA NIM / GitHub Models / Anthropic based on the
+    ``LLM_PROVIDER`` env var and falls back automatically on failure.
+    """
+    from runtime.reasoning.llm_provider import call_llm
+
+    timeout = max(float(ANTHROPIC_REQUEST_TIMEOUT_SECONDS), 1.0)
     last_error = None
     for attempt in range(max(1, ANTHROPIC_MAX_RETRIES)):
         try:
-            resp = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers=headers,
-                json=payload,
-                timeout=max(float(ANTHROPIC_REQUEST_TIMEOUT_SECONDS), 1.0),
-            )
-            result = resp.json()
-            if "error" in result:
-                error_type = result["error"].get("type", "unknown")
-                error_message = result["error"].get("message", "")
-                anthropic_status = "degraded" if (
-                    "credit balance is too low" in error_message.lower()
-                    or error_type in ("authentication_error", "invalid_request_error")
-                ) else "error"
-                record_component_state(
-                    "anthropic",
-                    ttl=600,
-                    anthropic_status=anthropic_status,
-                    last_error_at=utc_now_iso(),
-                    last_error_type=error_type,
-                )
-            # Retry on overloaded / rate-limit errors
-            if "error" in result and result["error"].get("type") in ("overloaded_error", "rate_limit_error"):
-                last_error = result
-                if attempt < max(1, ANTHROPIC_MAX_RETRIES) - 1:
-                    time.sleep(2 ** attempt)
-                continue
-            if "error" not in result:
-                record_component_state(
-                    "anthropic",
-                    ttl=600,
-                    anthropic_status="healthy",
-                    last_success_at=utc_now_iso(),
-                )
-            return result
-        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
-            last_error = {"error": {"type": "network_error", "message": str(e)}}
+            result = call_llm(payload, timeout=int(timeout))
             record_component_state(
                 "anthropic",
                 ttl=600,
-                anthropic_status="degraded",
-                last_error_at=utc_now_iso(),
-                last_error_type="network_error",
+                anthropic_status="healthy",
+                last_success_at=utc_now_iso(),
             )
-            if attempt < max(1, ANTHROPIC_MAX_RETRIES) - 1:
+            return result
+        except Exception as exc:  # noqa: BLE001 - surface the provider error shape
+            message = str(exc)
+            # Classify so downstream state tracking stays meaningful.
+            lowered = message.lower()
+            if "429" in message or "rate" in lowered:
+                error_type = "rate_limit_error"
+            elif "timed out" in lowered or "timeout" in lowered or "connection" in lowered:
+                error_type = "network_error"
+            elif "overload" in lowered:
+                error_type = "overloaded_error"
+            elif "credit balance is too low" in lowered or "401" in message or "authentication" in lowered:
+                error_type = "authentication_error"
+            else:
+                error_type = "provider_error"
+            last_error = {"error": {"type": error_type, "message": message[:500]}}
+            status = "degraded" if error_type in ("authentication_error", "rate_limit_error") else "error"
+            record_component_state(
+                "anthropic",
+                ttl=600,
+                anthropic_status=status,
+                last_error_at=utc_now_iso(),
+                last_error_type=error_type,
+            )
+            if error_type in ("rate_limit_error", "overloaded_error", "network_error") and attempt < max(1, ANTHROPIC_MAX_RETRIES) - 1:
                 time.sleep(2 ** attempt)
-            continue
+                continue
+            return last_error
     return last_error or {"error": {"type": "unknown", "message": "All retries failed"}}
 
 

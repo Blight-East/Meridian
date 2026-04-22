@@ -210,22 +210,15 @@ def _extract_json_object(text_block: str) -> dict[str, Any]:
 
 
 def _identity_payload_from_model(*, api_key: str, prompt: str, max_tokens: int = 450) -> dict[str, Any]:
-    response = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
+    from runtime.reasoning.llm_provider import call_llm
+    result = call_llm(
+        {
             "model": "claude-sonnet-4-6",
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=60,
     )
-    response.raise_for_status()
-    result = response.json()
     blocks = result.get("content") or []
     text_block = ""
     for block in blocks:
@@ -250,22 +243,15 @@ Rules:
 Draft:
 {text_block}
 """
-        repair_response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
+        from runtime.reasoning.llm_provider import call_llm
+        repair_result = call_llm(
+            {
                 "model": "claude-sonnet-4-6",
                 "max_tokens": 500,
                 "messages": [{"role": "user", "content": repair_prompt}],
             },
             timeout=60,
         )
-        repair_response.raise_for_status()
-        repair_result = repair_response.json()
         repair_text = ""
         for block in repair_result.get("content") or []:
             if block.get("type") == "text":
@@ -277,14 +263,9 @@ Draft:
 
 
 def _identity_list_from_model(*, api_key: str, prompt: str, item_count: int = 4) -> list[str]:
-    response = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
+    from runtime.reasoning.llm_provider import call_llm
+    result = call_llm(
+        {
             "model": "claude-sonnet-4-6",
             "max_tokens": 220,
             "messages": [{
@@ -300,8 +281,6 @@ Return exactly {item_count} items.""",
         },
         timeout=60,
     )
-    response.raise_for_status()
-    result = response.json()
     text_block = ""
     for block in result.get("content") or []:
         if block.get("type") == "text":
@@ -319,9 +298,9 @@ Return exactly {item_count} items.""",
 def choose_agent_identity(user_id: str) -> dict[str, Any]:
     profile = get_operator_profile(user_id)
     mission = get_mission_memory(user_id)
-    api_key = ENV_FILE_VALUES.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+    # Legacy field retained for compatibility with ``_identity_payload_from_model`` signature;
+    # actual provider routing happens inside ``runtime.reasoning.llm_provider.call_llm``.
+    api_key = ENV_FILE_VALUES.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or ""
 
     prompt = f"""Choose your own enduring identity as an autonomous operator partner.
 

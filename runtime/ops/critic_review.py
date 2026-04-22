@@ -50,25 +50,15 @@ def _anthropic_api_key() -> str:
 
 
 def _call_model_for_json(prompt: str, max_tokens: int = 500) -> dict[str, Any]:
-    api_key = _anthropic_api_key()
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
-    response = requests.post(
-        "https://api.anthropic.com/v1/messages",
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
+    from runtime.reasoning.llm_provider import call_llm
+    result = call_llm(
+        {
             "model": MODEL_NAME,
             "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": prompt}],
         },
         timeout=70,
     )
-    response.raise_for_status()
-    result = response.json()
     for block in result.get("content") or []:
         if block.get("type") == "text":
             return _extract_json_object(block.get("text", ""))

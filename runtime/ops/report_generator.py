@@ -167,12 +167,7 @@ def _report_exists_for_cluster(cluster):
 
 
 def _generate_report(cluster):
-    """Use Claude to generate a structured intelligence report."""
-    api_key = _get_api_key()
-    if not api_key:
-        logger.error("ANTHROPIC_API_KEY not available for report generation")
-        return None
-
+    """Use the configured LLM provider to generate a structured intelligence report."""
     signals_text = ""
     for i, sig in enumerate(cluster["top_signals"][:5], 1):
         signals_text += f"  {i}. [{sig['source']}] {sig['content'][:200]}\n"
@@ -210,25 +205,18 @@ Do NOT use markdown formatting inside the JSON values — use plain text only.
 Respond with valid JSON only, no markdown code blocks."""
 
     try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
+        from runtime.reasoning.llm_provider import call_llm
+        result = call_llm(
+            {
                 "model": "claude-sonnet-4-6",
                 "max_tokens": 2000,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=60,
         )
-        response.raise_for_status()
-        result = response.json()
 
         if "content" not in result or not result["content"]:
-            logger.error(f"Empty response from Claude for cluster {cluster['topic']}")
+            logger.error(f"Empty response from LLM for cluster {cluster['topic']}")
             return None
 
         raw = result["content"][0]["text"].strip()

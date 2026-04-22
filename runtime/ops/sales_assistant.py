@@ -303,22 +303,15 @@ Return JSON only:
 }}"""
 
     try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
+        from runtime.reasoning.llm_provider import call_llm
+        result = call_llm(
+            {
                 "model": "claude-3-haiku-20240307",
                 "max_tokens": 800,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=30,
         )
-        response.raise_for_status()
-        result = response.json()
 
         if "content" in result and result["content"]:
             import re
