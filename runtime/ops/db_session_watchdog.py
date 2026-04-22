@@ -247,7 +247,6 @@ def _emit_alert_if_transitioned(status: str, snapshot: dict[str, Any]) -> None:
     prev = None
     try:
         prev = _redis.get(WATCHDOG_STATUS_KEY + ":prev")
-        _redis.set(WATCHDOG_STATUS_KEY + ":prev", status, ex=86400)
     except Exception:  # pragma: no cover
         pass
 
@@ -255,6 +254,7 @@ def _emit_alert_if_transitioned(status: str, snapshot: dict[str, Any]) -> None:
     if prev and severity_order.get(status, 0) <= severity_order.get(prev, 0):
         return
 
+    delivered = False
     try:
         from runtime.ops.operator_alerts import send_operator_alert
 
@@ -262,13 +262,25 @@ def _emit_alert_if_transitioned(status: str, snapshot: dict[str, Any]) -> None:
             f"[DB_HARDENING] db_session_watchdog status={status}\n"
             f"{_format_alert_body(snapshot)}"
         )
-        send_operator_alert(
-            message_text,
-            dedupe_key=f"db_session_watchdog:{status}",
-            cooldown_seconds=900,
+        # send_operator_alert returns True on successful send, False on
+        # dedupe-suppression or internal failure.  Only advance the
+        # :prev marker when we actually delivered, otherwise a transient
+        # delivery failure would silently prevent future retries.
+        delivered = bool(
+            send_operator_alert(
+                message_text,
+                dedupe_key=f"db_session_watchdog:{status}",
+                cooldown_seconds=900,
+            )
         )
     except Exception as exc:  # pragma: no cover
         logger.warning("[DB_HARDENING] operator alert suppressed: %s", exc)
+
+    if delivered:
+        try:
+            _redis.set(WATCHDOG_STATUS_KEY + ":prev", status, ex=86400)
+        except Exception:  # pragma: no cover
+            pass
 
 
 def _format_alert_body(snapshot: dict[str, Any]) -> str:
