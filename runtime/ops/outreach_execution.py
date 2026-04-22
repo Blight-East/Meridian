@@ -19,6 +19,7 @@ from runtime.channels.store import (
     log_action,
     record_journal_entry,
 )
+from runtime.ops import conversion_upgrade as _upgrade
 from runtime.intelligence.commercial_qualification import assess_commercial_readiness
 from runtime.intelligence.distress_normalization import (
     doctrine_priority_reason,
@@ -827,12 +828,31 @@ def send_outreach_for_opportunity(
         if row.get("status") in {"sent", "won", "lost", "ignored"} and row.get("follow_up_due_at") and not _follow_up_allowed(dict(row)):
             return {"error": "Outreach already sent and no follow-up is due yet"}
 
-        result = _send_gmail_message(
-            to_email=row.get("contact_email") or "",
-            subject=row.get("subject") or "",
-            body=row.get("body") or "",
-            thread_id=row.get("gmail_thread_id") or "",
-        )
+        try:
+            result = _send_gmail_message(
+                to_email=row.get("contact_email") or "",
+                subject=row.get("subject") or "",
+                body=row.get("body") or "",
+                thread_id=row.get("gmail_thread_id") or "",
+            )
+        except _upgrade.OutreachDryRunSkipped as dry:
+            # MERIDIAN_UPGRADE_DRY_RUN path: no Gmail send, no DB mutation
+            # to status/approval_state, no log_action, no save_event, no
+            # journal entry, no deal-lifecycle transition.  The row stays
+            # in its pre-send state so a real send can be attempted later
+            # once the flag is flipped off.
+            _upgrade.log_upgrade(
+                "send_outreach_dry_run_skipped",
+                opportunity_id=int(opportunity_id),
+                to_email=dry.to_email,
+                thread_id=dry.thread_id,
+            )
+            return {
+                "status": "dry_run",
+                "dry_run": True,
+                "opportunity_id": int(opportunity_id),
+                "message": "Skipped: MERIDIAN_UPGRADE_DRY_RUN is enabled",
+            }
         sent_at = datetime.now(timezone.utc)
         follow_up_due_at = sent_at + timedelta(days=FOLLOW_UP_DAYS)
         metadata = _json_dict(row.get("metadata_json"))
@@ -2712,7 +2732,16 @@ def _build_outreach_artifact(context: dict, recommendation: dict, outreach_type:
             f"If helpful, I can send back {next_step_offer}. If you prefer to start lighter, there is also a free snapshot (https://payflux.dev/scan) before stepping into live monitoring. If the issue is active enough that you need ongoing visibility, the next step is PayFlux Pro (https://payflux.dev/upgrade).\n\n"
             "Best,\nPayFlux"
         )
-    return {"subject": subject, "body": body, "notes": rationale}
+    base_artifact = {"subject": subject, "body": body, "notes": rationale}
+    # STEP 2 — optional sales-strategy injection (no-op when flag OFF / no strategy).
+    enriched = _upgrade.build_dynamic_message(
+        context,
+        context.get("sales_strategy"),
+        base_artifact,
+    )
+    # STEP 4 — optional tracking-param append on payflux.dev / checkout links.
+    enriched["body"] = _upgrade.augment_body_with_tracking(enriched.get("body", ""))
+    return enriched
 
 
 def _normalize_rewrite_style(style: str) -> str:
@@ -2780,6 +2809,8 @@ def _rewrite_outreach_artifact(
     notes = recommendation.get("why_now") or ""
     if instructions and instructions.strip():
         notes = f"{notes} | rewrite: {instructions.strip()}".strip(" |")
+    # STEP 4 — preserve funnel tracking on rewritten bodies; flag-gated inside upgrade module.
+    rewritten_body = _upgrade.augment_body_with_tracking(rewritten_body)
     return {"subject": rewritten_subject, "body": rewritten_body, "notes": notes}
 
 
@@ -2949,6 +2980,27 @@ def _send_gmail_message(*, to_email: str, subject: str, body: str, thread_id: st
     adapter = GmailAdapter()
     if _recipient_is_denied(to_email, sender_email=adapter.sender_email):
         raise ValueError("Recipient is blocked by outreach denylist")
+    # STEP 5 — dry-run raises `OutreachDryRunSkipped` BEFORE the outbound
+    # Gmail API call.  The caller MUST catch this exception explicitly to
+    # treat the dry-run as a skip; otherwise it propagates as an error and
+    # the opportunity is NOT marked as sent (the safe failure mode).  This
+    # prevents downstream DB writes (status='sent', journal entries, deal
+    # lifecycle transitions) from running against a send that never
+    # happened.
+    if _upgrade.is_dry_run_enabled():
+        _upgrade.log_upgrade(
+            "gmail_send_dry_run",
+            to_email=to_email,
+            subject=(subject or "")[:120],
+            thread_id=thread_id or "",
+            body_preview=(body or "")[:160],
+        )
+        raise _upgrade.OutreachDryRunSkipped(
+            to_email=to_email,
+            subject=subject,
+            thread_id=thread_id,
+            body_preview=(body or "")[:160],
+        )
     message = MIMEText(body)
     message["to"] = to_email
     message["subject"] = subject
@@ -2958,7 +3010,29 @@ def _send_gmail_message(*, to_email: str, subject: str, body: str, thread_id: st
     if thread_id:
         payload["threadId"] = thread_id
     result = adapter._request("POST", "/messages/send", json=payload)
-    return {"message_id": result.get("id", ""), "thread_id": result.get("threadId", thread_id)}
+    sent = {"message_id": result.get("id", ""), "thread_id": result.get("threadId", thread_id)}
+    # STEP 4 — funnel event (no-op when flag OFF).  Failures never propagate.
+    try:
+        _upgrade.record_funnel_event(
+            "sent",
+            channel="gmail",
+            thread_id=sent["thread_id"],
+            message_id=sent["message_id"],
+            recipient=to_email,
+            metadata={"subject": (subject or "")[:160]},
+        )
+        if _upgrade.detect_bounce_from_gmail_result(result):
+            _upgrade.record_funnel_event(
+                "bounce",
+                channel="gmail",
+                thread_id=sent["thread_id"],
+                message_id=sent["message_id"],
+                recipient=to_email,
+                metadata={"source": "gmail_send_response"},
+            )
+    except Exception:  # pragma: no cover - best effort
+        pass
+    return sent
 
 
 def _follow_up_allowed(row: dict) -> bool:

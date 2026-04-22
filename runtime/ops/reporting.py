@@ -123,6 +123,19 @@ def generate_system_status():
     return report
 
 
+def generate_outreach_funnel_report(window_hours: int = 24) -> dict:
+    """
+    Return funnel metrics (open_rate / click_rate / bounce_rate) over the
+    trailing window.  Returns zeroed counters when MERIDIAN_ENABLE_FUNNEL_
+    TRACKING is OFF or no events have been recorded yet.
+    """
+    from runtime.ops import conversion_upgrade as _upgrade
+
+    snapshot = _upgrade.get_funnel_metrics_snapshot(window_hours=window_hours)
+    snapshot["generated_at"] = __import__("datetime").datetime.utcnow().isoformat() + "Z"
+    return snapshot
+
+
 def generate_daily_report():
     """Generate and send the daily intelligence report."""
     with engine.connect() as conn:
