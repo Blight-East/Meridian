@@ -56,6 +56,16 @@ ssh "$VPS_USER@$VPS_IP" "python3 -m pip install --disable-pip-version-check fast
 echo "[Deploy] Ensuring postgresql-client and redis-tools are installed on VPS..."
 ssh "$VPS_USER@$VPS_IP" "command -v psql >/dev/null && command -v redis-cli >/dev/null || (apt-get update -qq && apt-get install -y postgresql-client redis-tools)"
 
+# DB hardening (Phase 3) — opt-in schema migration runner.  Default OFF
+# for backwards compatibility; set MERIDIAN_RUN_MIGRATIONS_ON_DEPLOY=true
+# in the deploy shell to have the advisory-locked runner apply registered
+# migrations before PM2 restarts.  See runtime/ops/schema_migrations.py.
+if [ "${MERIDIAN_RUN_MIGRATIONS_ON_DEPLOY:-false}" = "true" ]; then
+  echo "[Deploy] Running registered schema migrations (advisory-locked)..."
+  ssh "$VPS_USER@$VPS_IP" "cd $APP_DIR && set -a && source .env && set +a && \
+    timeout 300 python3 -m runtime.ops.schema_migrations --apply"
+fi
+
 echo "[Deploy] Restarting PM2 services..."
 ssh "$VPS_USER@$VPS_IP" "cd $APP_DIR && set -a && source .env && set +a && pm2 stop ecosystem.config.js 2>/dev/null; pm2 delete ecosystem.config.js 2>/dev/null; pm2 delete agentflux-telegram 2>/dev/null; pm2 start ecosystem.config.js && pm2 save"
 

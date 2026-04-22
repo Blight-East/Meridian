@@ -24,7 +24,12 @@ engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
 
 
 def _init_opportunity_score_column():
-    with engine.connect() as conn:
+    # DB hardening (Phase 1): serialize the ALTER across the fleet so the
+    # api / worker / scheduler / telegram / mcp PM2 processes cannot race
+    # on it.  No-op wrapper when MERIDIAN_SCHEMA_MIGRATIONS_ENABLED=false.
+    from runtime.ops.schema_migrations import with_advisory_lock as _with_lock
+
+    with _with_lock("opportunity_score_column"), engine.connect() as conn:
         conn.execute(text("""
             ALTER TABLE merchants
             ADD COLUMN IF NOT EXISTS opportunity_score FLOAT DEFAULT 0,
