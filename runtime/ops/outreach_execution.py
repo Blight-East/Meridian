@@ -19,6 +19,7 @@ from runtime.channels.store import (
     log_action,
     record_journal_entry,
 )
+from runtime.ops import conversion_upgrade as _upgrade
 from runtime.intelligence.commercial_qualification import assess_commercial_readiness
 from runtime.intelligence.distress_normalization import (
     doctrine_priority_reason,
@@ -2712,7 +2713,16 @@ def _build_outreach_artifact(context: dict, recommendation: dict, outreach_type:
             f"If helpful, I can send back {next_step_offer}. If you prefer to start lighter, there is also a free snapshot (https://payflux.dev/scan) before stepping into live monitoring. If the issue is active enough that you need ongoing visibility, the next step is PayFlux Pro (https://payflux.dev/upgrade).\n\n"
             "Best,\nPayFlux"
         )
-    return {"subject": subject, "body": body, "notes": rationale}
+    base_artifact = {"subject": subject, "body": body, "notes": rationale}
+    # STEP 2 — optional sales-strategy injection (no-op when flag OFF / no strategy).
+    enriched = _upgrade.build_dynamic_message(
+        context,
+        context.get("sales_strategy"),
+        base_artifact,
+    )
+    # STEP 4 — optional tracking-param append on payflux.dev / checkout links.
+    enriched["body"] = _upgrade.augment_body_with_tracking(enriched.get("body", ""))
+    return enriched
 
 
 def _normalize_rewrite_style(style: str) -> str:
@@ -2949,6 +2959,22 @@ def _send_gmail_message(*, to_email: str, subject: str, body: str, thread_id: st
     adapter = GmailAdapter()
     if _recipient_is_denied(to_email, sender_email=adapter.sender_email):
         raise ValueError("Recipient is blocked by outreach denylist")
+    # STEP 5 — dry-run short-circuits the outbound Gmail API call when
+    # MERIDIAN_UPGRADE_DRY_RUN is ON.  Everything upstream (DB writes,
+    # approval state) still runs as normal.
+    if _upgrade.is_dry_run_enabled():
+        _upgrade.log_upgrade(
+            "gmail_send_dry_run",
+            to_email=to_email,
+            subject=(subject or "")[:120],
+            thread_id=thread_id or "",
+            body_preview=(body or "")[:160],
+        )
+        return {
+            "message_id": "dry-run",
+            "thread_id": thread_id,
+            "dry_run": True,
+        }
     message = MIMEText(body)
     message["to"] = to_email
     message["subject"] = subject
@@ -2958,7 +2984,29 @@ def _send_gmail_message(*, to_email: str, subject: str, body: str, thread_id: st
     if thread_id:
         payload["threadId"] = thread_id
     result = adapter._request("POST", "/messages/send", json=payload)
-    return {"message_id": result.get("id", ""), "thread_id": result.get("threadId", thread_id)}
+    sent = {"message_id": result.get("id", ""), "thread_id": result.get("threadId", thread_id)}
+    # STEP 4 — funnel event (no-op when flag OFF).  Failures never propagate.
+    try:
+        _upgrade.record_funnel_event(
+            "sent",
+            channel="gmail",
+            thread_id=sent["thread_id"],
+            message_id=sent["message_id"],
+            recipient=to_email,
+            metadata={"subject": (subject or "")[:160]},
+        )
+        if _upgrade.detect_bounce_from_gmail_result(result):
+            _upgrade.record_funnel_event(
+                "bounce",
+                channel="gmail",
+                thread_id=sent["thread_id"],
+                message_id=sent["message_id"],
+                recipient=to_email,
+                metadata={"source": "gmail_send_response"},
+            )
+    except Exception:  # pragma: no cover - best effort
+        pass
+    return sent
 
 
 def _follow_up_allowed(row: dict) -> bool:

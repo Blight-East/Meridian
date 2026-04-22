@@ -198,7 +198,30 @@ class GmailAdapter(ChannelAdapter):
         recipient = draft.metadata.get("recipient") or kwargs.get("recipient")
         if not recipient:
             return ActionResult(False, "error", draft.target_id, draft.thread_id, error="Missing recipient")
-        message = MIMEText(draft.text)
+        # Optional flag-gated pre-send transforms (funnel tracking + dry-run).
+        try:
+            from runtime.ops import conversion_upgrade as _upgrade  # lazy import to avoid cycles
+        except Exception:
+            _upgrade = None
+        text_body = draft.text
+        if _upgrade is not None:
+            text_body = _upgrade.augment_body_with_tracking(text_body)
+            if _upgrade.is_dry_run_enabled():
+                _upgrade.log_upgrade(
+                    "gmail_adapter_dry_run",
+                    recipient=recipient,
+                    subject=(draft.subject or "")[:120],
+                    thread_id=draft.thread_id,
+                )
+                return ActionResult(
+                    True,
+                    "dry_run",
+                    draft.target_id,
+                    draft.thread_id,
+                    "dry-run",
+                    {"dry_run": True},
+                )
+        message = MIMEText(text_body)
         message["to"] = recipient
         message["from"] = f"{self.sender_name} <{self.sender_email}>" if self.sender_email else self.sender_name
         message["subject"] = draft.subject
@@ -210,6 +233,27 @@ class GmailAdapter(ChannelAdapter):
         payload = {"raw": raw, "threadId": draft.thread_id}
         result = self._request("POST", "/messages/send", json=payload)
         self._apply_labels(draft.thread_id, ["bot-sent", "bot-replied"])
+        if _upgrade is not None:
+            try:
+                _upgrade.record_funnel_event(
+                    "sent",
+                    channel="gmail",
+                    thread_id=draft.thread_id,
+                    message_id=result.get("id", ""),
+                    recipient=recipient,
+                    metadata={"subject": (draft.subject or "")[:160], "via": "adapter"},
+                )
+                if _upgrade.detect_bounce_from_gmail_result(result):
+                    _upgrade.record_funnel_event(
+                        "bounce",
+                        channel="gmail",
+                        thread_id=draft.thread_id,
+                        message_id=result.get("id", ""),
+                        recipient=recipient,
+                        metadata={"source": "gmail_send_response"},
+                    )
+            except Exception:
+                pass
         return ActionResult(True, "sent", draft.target_id, draft.thread_id, result.get("id", ""), result)
 
     def modify_own_action(self, target_id: str, content: str, **kwargs) -> ActionResult:

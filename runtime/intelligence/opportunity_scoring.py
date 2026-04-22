@@ -18,6 +18,7 @@ sys.path.insert(0, _dir)
 
 from config.logging_config import get_logger
 from memory.structured.db import save_event
+from runtime.ops import conversion_upgrade as _upgrade
 
 logger = get_logger("opportunity_scoring")
 engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
@@ -29,7 +30,8 @@ def _init_opportunity_score_column():
             ALTER TABLE merchants
             ADD COLUMN IF NOT EXISTS opportunity_score FLOAT DEFAULT 0,
             ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'active',
-            ADD COLUMN IF NOT EXISTS confidence_score INTEGER DEFAULT 0
+            ADD COLUMN IF NOT EXISTS confidence_score INTEGER DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS urgency_score FLOAT DEFAULT 0
         """))
         conn.commit()
 
@@ -132,17 +134,47 @@ def score_merchants(limit=100):
                 + (10 if domain_present else 0)
             )
 
+            # Determine the dominant processor for urgency weighting.
+            # Cheap single-row scan over the last 200 signals for the merchant.
+            dominant_processor = conn.execute(text("""
+                SELECT CASE
+                         WHEN LOWER(content) LIKE '%stripe%' THEN 'stripe'
+                         WHEN LOWER(content) LIKE '%paypal%' THEN 'paypal'
+                         WHEN LOWER(content) LIKE '%square%' THEN 'square'
+                         ELSE 'other'
+                       END AS processor, COUNT(*) AS cnt
+                FROM signals
+                WHERE merchant_id = :merchant_id
+                GROUP BY 1
+                ORDER BY cnt DESC
+                LIMIT 1
+            """), {"merchant_id": merchant_id}).fetchone()
+            urgency_processor = dominant_processor[0] if dominant_processor else "other"
+
+            urgency_score = _upgrade.compute_urgency_score(
+                distress_score=distress_score,
+                recent_signal_count=recent_signal_count,
+                processor=urgency_processor,
+            )
+
+            # Always write urgency_score (additive column).  Whether the
+            # pipeline *reads* it at sort time is still gated by
+            # MERIDIAN_ENABLE_URGENCY_SORT downstream in deal_sourcing.
             conn.execute(text("""
                 UPDATE merchants
-                SET opportunity_score = :score
+                SET opportunity_score = :score,
+                    urgency_score = :urgency
                 WHERE id = :merchant_id
             """), {
                 "score": opportunity_score,
+                "urgency": urgency_score,
                 "merchant_id": merchant_id,
             })
             save_event("merchant_opportunity_scored", {
                 "merchant": canonical_name,
                 "score": opportunity_score,
+                "urgency_score": urgency_score,
+                "urgency_processor": urgency_processor,
                 "signal_count": signal_count,
                 "recent_signal_count": recent_signal_count,
                 "processor_mentions": processor_mentions,

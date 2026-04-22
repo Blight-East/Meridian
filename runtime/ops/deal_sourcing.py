@@ -14,12 +14,55 @@ from runtime.intelligence.opportunity_queue_quality import (
     ELIGIBILITY_OUTREACH,
     evaluate_opportunity_queue_quality,
 )
+from runtime.ops import conversion_upgrade as _upgrade
 
 logger = get_logger("deal_sourcing")
 engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
 
 MAX_OPPORTUNITIES_PER_CYCLE = 10
 MIN_CONTACT_CONFIDENCE = 0.85
+
+
+# ---------------------------------------------------------------------------
+# Contact resolution (additive wrapper — legacy gate preserved below)
+# ---------------------------------------------------------------------------
+# When MERIDIAN_RELAX_CONTACT_CONF is OFF this helper returns exactly the
+# same top contact as the legacy `LIMIT 1 WHERE confidence >= MIN_CONTACT_
+# CONFIDENCE` query did.  When the flag is ON we also accept contacts at
+# MIN_CONTACT_CONFIDENCE_RELAXED and role-based same-domain verified emails,
+# and return up to 3 ranked by confidence DESC.
+# ---------------------------------------------------------------------------
+_CONTACT_SELECT_SQL = text(
+    """
+    SELECT email,
+           contact_name,
+           confidence,
+           COALESCE(email_verified, FALSE) AS email_verified,
+           COALESCE(same_domain, FALSE) AS same_domain,
+           COALESCE(local_part, '') AS local_part,
+           COALESCE(email_domain, '') AS email_domain
+    FROM merchant_contacts
+    WHERE merchant_id = :mid
+      AND email IS NOT NULL
+      AND email != ''
+    ORDER BY confidence DESC
+    LIMIT 25
+    """
+)
+
+
+def _resolve_contacts_for_outreach(conn, merchant_id, merchant_domain, min_conf):
+    """Return a ranked list of up to N contacts for an outreach action.
+
+    Always calls `filter_contacts_for_outreach`; when the relax flag is OFF
+    that helper is a no-op beyond `confidence >= min_conf`.
+    """
+    rows = conn.execute(_CONTACT_SELECT_SQL, {"mid": merchant_id}).mappings().all()
+    return _upgrade.filter_contacts_for_outreach(
+        rows,
+        legacy_min_conf=float(min_conf),
+        merchant_domain=merchant_domain,
+    )
 
 
 def run_deal_sourcing_cycle():
@@ -37,8 +80,18 @@ def run_deal_sourcing_cycle():
     opportunities_created = 0
 
     with engine.connect() as conn:
-        # Step 1: Find distressed clusters with linked merchants
-        clusters = conn.execute(text("""
+        # Step 1: Find distressed clusters with linked merchants.
+        # When MERIDIAN_ENABLE_URGENCY_SORT is ON we prepend
+        # `COALESCE(m.urgency_score, 0) DESC` to the existing ORDER BY so the
+        # legacy ordering is preserved as a stable tiebreaker.
+        _urgency_order = (
+            "COALESCE(m.urgency_score, 0) DESC,\n              "
+            if _upgrade.is_urgency_sort_enabled()
+            else ""
+        )
+        if _urgency_order:
+            _upgrade.log_upgrade("urgency_sort_enabled")
+        cluster_sql = f"""
             SELECT DISTINCT c.cluster_topic, c.cluster_size, m.id as merchant_id,
                    m.canonical_name, m.domain, m.industry, m.distress_score, m.domain_confidence,
                    CASE WHEN m.domain_confidence = 'confirmed' THEN 1 ELSE 2 END as domain_sort_order
@@ -53,12 +106,13 @@ def run_deal_sourcing_cycle():
                   AND created_at >= NOW() - INTERVAL '7 days'
                   AND status NOT IN ('rejected')
               )
-            ORDER BY 
-              domain_sort_order ASC,
-              c.cluster_size DESC, 
+            ORDER BY
+              {_urgency_order}domain_sort_order ASC,
+              c.cluster_size DESC,
               m.distress_score DESC
             LIMIT :limit
-        """), {"limit": MAX_OPPORTUNITIES_PER_CYCLE}).fetchall()
+        """
+        clusters = conn.execute(text(cluster_sql), {"limit": MAX_OPPORTUNITIES_PER_CYCLE}).fetchall()
 
         if not clusters:
             logger.info("No new deal-sourcing candidates found")
@@ -212,15 +266,16 @@ def _process_merchant_opportunity(conn, merchant_id, merchant_name, domain, indu
             "objection_handling": []
         }
 
-    # Step 4: Check for contacts with sufficient confidence
-    contact_row = conn.execute(text("""
-        SELECT email, contact_name, confidence FROM merchant_contacts
-        WHERE merchant_id = :mid AND confidence >= :min_conf
-        ORDER BY confidence DESC LIMIT 1
-    """), {"mid": merchant_id, "min_conf": MIN_CONTACT_CONFIDENCE}).fetchone()
-
-    contact_email = contact_row[0] if contact_row else None
-    contact_name = contact_row[1] if contact_row else merchant_name
+    # Step 4: Check for contacts with sufficient confidence.
+    # Legacy gate is preserved inside `_resolve_contacts_for_outreach`; when
+    # MERIDIAN_RELAX_CONTACT_CONF is ON the helper also admits relaxed-gate
+    # and role-based same-domain verified contacts and returns up to 3.
+    contacts = _resolve_contacts_for_outreach(
+        conn, merchant_id, domain, MIN_CONTACT_CONFIDENCE
+    )
+    primary = contacts[0] if contacts else None
+    contact_email = primary.get("email") if primary else None
+    contact_name = (primary.get("contact_name") if primary else None) or merchant_name
     if not contact_email:
         save_event(
             "merchant_opportunity_suppressed",
@@ -427,17 +482,12 @@ def promote_opportunities_to_pipeline(limit=BRIDGE_BATCH_SIZE):
                 skipped_no_domain += 1
                 continue
 
-            # Check for verified contact
-            contact = conn.execute(text("""
-                SELECT email, contact_name, confidence
-                FROM merchant_contacts
-                WHERE merchant_id = :mid
-                  AND confidence >= :min_conf
-                  AND email IS NOT NULL
-                  AND email != ''
-                ORDER BY confidence DESC
-                LIMIT 1
-            """), {"mid": merchant_id, "min_conf": BRIDGE_MIN_CONTACT_CONFIDENCE}).fetchone()
+            # Check for verified contact (legacy gate 0.85; relax flag may
+            # admit lower-confidence or role-based same-domain emails).
+            bridge_contacts = _resolve_contacts_for_outreach(
+                conn, merchant_id, domain, BRIDGE_MIN_CONTACT_CONFIDENCE
+            )
+            contact = bridge_contacts[0] if bridge_contacts else None
 
             if not contact:
                 skipped_no_contact += 1
@@ -489,7 +539,7 @@ def promote_opportunities_to_pipeline(limit=BRIDGE_BATCH_SIZE):
                         "domain": domain,
                         "processor": processor,
                         "distress_type": distress_type,
-                        "contact_email": contact[0],
+                        "contact_email": contact.get("email"),
                         "opportunity_score": opp_score,
                     })
                     logger.info(
