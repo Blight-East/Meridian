@@ -130,19 +130,125 @@ def _resolve_model(provider: str, anthropic_model: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _flatten_content(content: Any) -> str:
+    """Collapse an Anthropic-shaped content payload into a plain string.
+
+    Handles the three Anthropic block types that carry a payload:
+    ``text`` blocks (``text`` key), ``tool_result`` blocks (``content`` key —
+    may itself be a string or a list of text blocks), and any other dict with
+    a stringifiable ``text`` or ``content`` field. Used for system prompts
+    and for messages that don't need full tool-use translation.
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         parts: List[str] = []
         for block in content:
             if isinstance(block, dict):
-                text = block.get("text")
-                if text:
-                    parts.append(str(text))
+                # ``text`` for text/tool_use blocks; ``content`` for tool_result blocks.
+                value = block.get("text")
+                if value is None:
+                    value = block.get("content")
+                if value is None:
+                    continue
+                if isinstance(value, list):
+                    parts.append(_flatten_content(value))
+                elif isinstance(value, str):
+                    if value:
+                        parts.append(value)
+                else:
+                    parts.append(str(value))
             elif isinstance(block, str):
                 parts.append(block)
-        return "\n".join(parts)
+        return "\n".join(p for p in parts if p)
     return str(content or "")
+
+
+def _anthropic_tools_to_openai(tools: Any) -> List[Dict[str, Any]]:
+    """Translate an Anthropic ``tools`` list to OpenAI function-calling tools."""
+    out: List[Dict[str, Any]] = []
+    if not isinstance(tools, list):
+        return out
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        name = tool.get("name")
+        if not name:
+            continue
+        out.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": tool.get("description") or "",
+                "parameters": tool.get("input_schema") or {"type": "object", "properties": {}},
+            },
+        })
+    return out
+
+
+def _translate_assistant_message(content: Any) -> Dict[str, Any]:
+    """Turn an Anthropic assistant message (possibly containing ``tool_use``)
+    into the OpenAI assistant-message shape. Text blocks join into
+    ``content``; ``tool_use`` blocks become ``tool_calls`` entries.
+    """
+    text_parts: List[str] = []
+    tool_calls: List[Dict[str, Any]] = []
+    if isinstance(content, str):
+        text_parts.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                if isinstance(block, str):
+                    text_parts.append(block)
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                t = block.get("text")
+                if t:
+                    text_parts.append(str(t))
+            elif btype == "tool_use":
+                try:
+                    args_str = json.dumps(block.get("input") or {})
+                except (TypeError, ValueError):
+                    args_str = "{}"
+                tool_calls.append({
+                    "id": str(block.get("id") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(block.get("name") or ""),
+                        "arguments": args_str,
+                    },
+                })
+    msg: Dict[str, Any] = {"role": "assistant", "content": "\n".join(p for p in text_parts if p)}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    return msg
+
+
+def _translate_user_tool_results(content: Any) -> List[Dict[str, Any]]:
+    """If a user message consists of ``tool_result`` blocks, emit one OpenAI
+    ``{"role": "tool", ...}`` message per result. Returns an empty list when
+    there are no tool_result blocks (caller falls back to plain flattening).
+    """
+    if not isinstance(content, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") != "tool_result":
+            continue
+        tool_call_id = str(block.get("tool_use_id") or "")
+        value = block.get("content")
+        if isinstance(value, list):
+            value = _flatten_content(value)
+        elif not isinstance(value, str):
+            value = str(value or "")
+        out.append({
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": value,
+        })
+    return out
 
 
 def _anthropic_to_openai(payload: Dict[str, Any], resolved_model: str) -> Dict[str, Any]:
@@ -156,10 +262,32 @@ def _anthropic_to_openai(payload: Dict[str, Any], resolved_model: str) -> Dict[s
         if not isinstance(msg, dict):
             continue
         role = str(msg.get("role") or "user")
-        # OpenAI Chat Completions only understands system/user/assistant/tool roles.
+        raw_content = msg.get("content", "")
+
+        if role == "assistant":
+            messages.append(_translate_assistant_message(raw_content))
+            continue
+
+        if role == "user":
+            # A user message may be a tool_result round (list of tool_result blocks)
+            # or a normal text turn. Split accordingly so tool context survives.
+            tool_msgs = _translate_user_tool_results(raw_content)
+            if tool_msgs:
+                messages.extend(tool_msgs)
+                # Preserve any residual text blocks alongside the tool results.
+                if isinstance(raw_content, list):
+                    residual_text = _flatten_content([
+                        b for b in raw_content
+                        if isinstance(b, dict) and b.get("type") != "tool_result"
+                    ]).strip()
+                    if residual_text:
+                        messages.append({"role": "user", "content": residual_text})
+                continue
+
         if role not in ("system", "user", "assistant", "tool"):
             role = "user"
-        messages.append({"role": role, "content": _flatten_content(msg.get("content", ""))})
+        messages.append({"role": role, "content": _flatten_content(raw_content)})
+
     out: Dict[str, Any] = {
         "model": resolved_model,
         "messages": messages,
@@ -168,6 +296,21 @@ def _anthropic_to_openai(payload: Dict[str, Any], resolved_model: str) -> Dict[s
     for key in ("temperature", "top_p", "stop"):
         if key in payload and payload[key] is not None:
             out[key] = payload[key]
+
+    tools = payload.get("tools")
+    if tools:
+        translated = _anthropic_tools_to_openai(tools)
+        if translated:
+            out["tools"] = translated
+            choice = payload.get("tool_choice")
+            if isinstance(choice, dict):
+                ctype = choice.get("type")
+                if ctype == "auto":
+                    out["tool_choice"] = "auto"
+                elif ctype == "any":
+                    out["tool_choice"] = "required"
+                elif ctype == "tool" and choice.get("name"):
+                    out["tool_choice"] = {"type": "function", "function": {"name": choice["name"]}}
     return out
 
 
@@ -183,18 +326,53 @@ _OAI_STOP_TO_ANTHROPIC = {
 def _openai_to_anthropic(data: Dict[str, Any], resolved_model: str) -> Dict[str, Any]:
     choice = (data.get("choices") or [{}])[0] if isinstance(data.get("choices"), list) else {}
     msg = choice.get("message") or {}
-    text = msg.get("content") or ""
-    if isinstance(text, list):  # some providers return list-of-parts
-        text = _flatten_content(text)
     finish_reason = choice.get("finish_reason")
     usage = data.get("usage") or {}
+
+    content_blocks: List[Dict[str, Any]] = []
+
+    text = msg.get("content") or ""
+    if isinstance(text, list):
+        text = _flatten_content(text)
+    text = str(text)
+    if text:
+        content_blocks.append({"type": "text", "text": text})
+
+    tool_calls = msg.get("tool_calls") or []
+    if isinstance(tool_calls, list):
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function") or {}
+            raw_args = fn.get("arguments") or "{}"
+            try:
+                parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+            except (json.JSONDecodeError, TypeError):
+                parsed_args = {"_raw_arguments": str(raw_args)}
+            content_blocks.append({
+                "type": "tool_use",
+                "id": str(tc.get("id") or ""),
+                "name": str(fn.get("name") or ""),
+                "input": parsed_args if isinstance(parsed_args, dict) else {"_value": parsed_args},
+            })
+
+    if not content_blocks:
+        content_blocks = [{"type": "text", "text": ""}]
+
+    # Force stop_reason=tool_use when the model emitted tool calls, even if a
+    # provider returned a different finish_reason (some NIM models return "stop").
+    has_tool_use = any(b.get("type") == "tool_use" for b in content_blocks)
+    stop_reason = _OAI_STOP_TO_ANTHROPIC.get(finish_reason, "end_turn")
+    if has_tool_use:
+        stop_reason = "tool_use"
+
     return {
         "id": data.get("id") or "",
         "type": "message",
         "role": "assistant",
         "model": resolved_model,
-        "content": [{"type": "text", "text": str(text)}],
-        "stop_reason": _OAI_STOP_TO_ANTHROPIC.get(finish_reason, "end_turn"),
+        "content": content_blocks,
+        "stop_reason": stop_reason,
         "stop_sequence": None,
         "usage": {
             "input_tokens": int(usage.get("prompt_tokens") or 0),
