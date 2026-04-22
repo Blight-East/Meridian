@@ -258,12 +258,12 @@ def _get_latest_draft(lead_id):
 
 
 def _generate_with_claude(lead, checkout_url):
-    """Use Claude to generate a personalized outreach message."""
-    api_key = _get_api_key()
-    if not api_key:
-        logger.warning("No API key for sales message generation")
-        return None
+    """Generate a personalized outreach message via the configured LLM provider.
 
+    Legacy function name retained; the transport now goes through
+    :func:`runtime.reasoning.llm_provider.call_llm`, which validates whichever
+    provider (NVIDIA NIM / GitHub Models / Anthropic) is configured.
+    """
     urgency_rule = (
         "5. Put the checkout URL above fold immediately after the empathy line.\n"
         "6. The subject should convey an urgent fix for payout disruption.\n"

@@ -354,9 +354,9 @@ def deepen_agent_identity(user_id: str) -> dict[str, Any]:
     profile = get_operator_profile(user_id)
     identity = get_agent_identity(user_id)
     mission = get_mission_memory(user_id)
-    api_key = ENV_FILE_VALUES.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+    # Legacy field retained for compatibility with ``_identity_payload_from_model`` signature;
+    # actual provider routing happens inside ``runtime.reasoning.llm_provider.call_llm``.
+    api_key = ENV_FILE_VALUES.get("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_API_KEY") or ""
 
     shared_context = f"""Identity context:
 - name: {identity.get("name") or ""}

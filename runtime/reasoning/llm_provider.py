@@ -51,11 +51,22 @@ _ENV_FILE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
 # ---------------------------------------------------------------------------
 
 def _env(name: str, default: str = "") -> str:
+    """Return a trimmed env value, preserving ``""`` as an explicit override.
+
+    Uses a precedence chain (``.env`` file → process env → ``default``) rather
+    than ``or``-chaining so that an explicitly-empty ``NAME=`` in ``.env``
+    (e.g. ``LLM_FALLBACK_PROVIDER=`` to disable fallback) is honoured instead
+    of silently falling through to ``default``.
+    """
     try:
         file_values = dotenv_values(_ENV_FILE_PATH)
     except Exception:
         file_values = {}
-    value = file_values.get(name) or os.getenv(name) or default
+    value = file_values.get(name)
+    if value is None:
+        value = os.getenv(name)
+    if value is None:
+        value = default
     return str(value).strip()
 
 
