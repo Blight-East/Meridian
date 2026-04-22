@@ -84,17 +84,26 @@ def run_deal_sourcing_cycle():
         # When MERIDIAN_ENABLE_URGENCY_SORT is ON we prepend
         # `COALESCE(m.urgency_score, 0) DESC` to the existing ORDER BY so the
         # legacy ordering is preserved as a stable tiebreaker.
+        # SELECT DISTINCT requires every ORDER BY expression to appear in the
+        # select list, so the urgency column is only added to the projection
+        # when the flag is ON. Flag OFF keeps the SQL byte-identical to legacy.
+        _urgency_enabled = _upgrade.is_urgency_sort_enabled()
         _urgency_order = (
             "COALESCE(m.urgency_score, 0) DESC,\n              "
-            if _upgrade.is_urgency_sort_enabled()
+            if _urgency_enabled
             else ""
         )
-        if _urgency_order:
+        _urgency_select = (
+            ",\n                   COALESCE(m.urgency_score, 0) AS urgency_sort_key"
+            if _urgency_enabled
+            else ""
+        )
+        if _urgency_enabled:
             _upgrade.log_upgrade("urgency_sort_enabled")
         cluster_sql = f"""
             SELECT DISTINCT c.cluster_topic, c.cluster_size, m.id as merchant_id,
                    m.canonical_name, m.domain, m.industry, m.distress_score, m.domain_confidence,
-                   CASE WHEN m.domain_confidence = 'confirmed' THEN 1 ELSE 2 END as domain_sort_order
+                   CASE WHEN m.domain_confidence = 'confirmed' THEN 1 ELSE 2 END as domain_sort_order{_urgency_select}
             FROM clusters c
             JOIN signals s ON s.detected_at >= NOW() - INTERVAL '48 hours'
             JOIN merchants m ON s.merchant_id = m.id
