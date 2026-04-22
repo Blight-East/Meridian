@@ -29,17 +29,39 @@ from tools.web_search import web_search
 from tools.db_query import db_query
 from config.logging_config import get_logger
 from runtime.health.telemetry import clear_component_fields, heartbeat, record_component_state, utc_now_iso
+from runtime.ops.tool_telemetry import record_tool_call as _record_tool_call
 
 logger = get_logger("worker")
 WORKER_TASK_TIMEOUT_SECONDS = int(os.getenv("AGENT_FLUX_WORKER_TASK_TIMEOUT_SECONDS", "300"))
+
+
+# Lazy-loaded implementations so the worker module stays importable even if
+# one of the heavyweight ingestion / ops modules has a transient import
+# error.  Previously these three entries were ``None`` and dispatch relied
+# on a hard-coded ``if action == ...`` ladder in ``_execute_tool``; now
+# every action resolves through a single TOOLS lookup.
+def _lazy_scan_signals(_task_input=None):
+    from runtime.ingestion.merchant_scanner import scan_merchants
+    return scan_merchants()
+
+
+def _lazy_fix_pipeline(_task_input=None):
+    from runtime.ops.pipeline_diagnostics import run_pipeline_diagnostics
+    return run_pipeline_diagnostics()
+
+
+def _lazy_run_sales_cycle(_task_input=None):
+    from runtime.ops.autonomous_sales import run_autonomous_sales_cycle
+    return run_autonomous_sales_cycle()
+
 
 TOOLS = {
     "web_fetch": web_fetch,
     "web_search": web_search,
     "db_query": db_query,
-    "scan_signals": None,
-    "fix_pipeline": None,
-    "run_sales_cycle": None,
+    "scan_signals": _lazy_scan_signals,
+    "fix_pipeline": _lazy_fix_pipeline,
+    "run_sales_cycle": _lazy_run_sales_cycle,
 }
 
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
@@ -171,23 +193,22 @@ while True:
 
                 # Execute tool
                 def _execute_tool():
-                    if action == "scan_signals":
-                        from ingestion.merchant_scanner import scan_merchants
-                        return scan_merchants()
-                    if action == "fix_pipeline":
-                        from ops.pipeline_diagnostics import run_pipeline_diagnostics
-                        return run_pipeline_diagnostics()
-                    if action == "run_sales_cycle":
-                        from ops.autonomous_sales import run_autonomous_sales_cycle
-                        return run_autonomous_sales_cycle()
-                    if TOOLS[action]:
+                    handler = TOOLS.get(action)
+                    if handler is None:
+                        return {"status": "no_handler", "action": action}
+                    # External-request rate limiting applies to the
+                    # network-ish tools (web_fetch / web_search); the
+                    # cycle / diagnostics / db_query calls are local.
+                    if action in ("web_fetch", "web_search"):
                         rate_limiter.check("external_request")
-                        return TOOLS[action](task_input)
-                    return {"status": "no_handler"}
+                    return handler(task_input)
 
                 tool_started = time.time()
+                _tool_ok = False
+                _tool_error: str | None = None
                 try:
                     tool_result = _run_with_timeout(_execute_tool, WORKER_TASK_TIMEOUT_SECONDS)
+                    _tool_ok = True
                 except WorkerTaskTimeout:
                     tool_duration = round(time.time() - tool_started, 2)
                     logger.error(f"Worker task timed out: {action} after {tool_duration}s")
@@ -200,10 +221,20 @@ while True:
                         last_task_duration_seconds=tool_duration,
                     )
                     tool_result = {"error": f"timeout after {WORKER_TASK_TIMEOUT_SECONDS}s"}
+                    _tool_error = "timeout"
+                    try:
+                        _record_tool_call(
+                            "worker", action, ok=False,
+                            duration_ms=int(tool_duration * 1000),
+                            error=f"timeout after {WORKER_TASK_TIMEOUT_SECONDS}s",
+                        )
+                    except Exception:
+                        pass
                     # Timeout: leave in inflight for alert + replay decision
                     continue
                 except Exception as e:
                     tool_result = {"error": str(e)}
+                    _tool_error = f"{e.__class__.__name__}: {e}"
                 else:
                     tool_duration = round(time.time() - tool_started, 2)
                     record_component_state(
@@ -217,6 +248,15 @@ while True:
                 logger.info(f"Tool result: {tool_result}")
                 print(f"Tool result: {tool_result}")
                 save_event("tool_execution", {"action": action, "result": tool_result if isinstance(tool_result, dict) else {"raw": str(tool_result)}})
+                try:
+                    _record_tool_call(
+                        "worker", action,
+                        ok=_tool_ok and _tool_error is None,
+                        duration_ms=int((time.time() - tool_started) * 1000),
+                        error=_tool_error,
+                    )
+                except Exception:
+                    pass
 
             # ── SUCCESS: remove from inflight ──
             r.lrem(INFLIGHT_KEY, 1, task)

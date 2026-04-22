@@ -350,6 +350,22 @@ def build_dynamic_message(
         recommended=bool(recommended),
         delta_chars=len(new_body) - len(body),
     )
+    # Prompt-engineering playbook hook (warn_only by default — never blocks).
+    # Flips to blocking behaviour only when MERIDIAN_PLAYBOOK_ENFORCEMENT=enforce.
+    try:
+        from runtime.ops.prompt_review import review_prompt
+
+        verdict = review_prompt(new_body, label="dynamic_message")
+        if not verdict.get("ok") and verdict.get("mode") == "enforce":
+            # In enforce mode we prefer the original template to a rejected rewrite.
+            log_upgrade(
+                "dynamic_message_rejected_by_prompt_review",
+                missing=",".join(verdict.get("missing", [])),
+                score=verdict.get("score"),
+            )
+            return base_template
+    except Exception:
+        pass
     return {**base_template, "body": new_body}
 
 
