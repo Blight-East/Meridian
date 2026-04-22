@@ -2809,6 +2809,8 @@ def _rewrite_outreach_artifact(
     notes = recommendation.get("why_now") or ""
     if instructions and instructions.strip():
         notes = f"{notes} | rewrite: {instructions.strip()}".strip(" |")
+    # STEP 4 — preserve funnel tracking on rewritten bodies; flag-gated inside upgrade module.
+    rewritten_body = _upgrade.augment_body_with_tracking(rewritten_body)
     return {"subject": rewritten_subject, "body": rewritten_body, "notes": notes}
 
 
