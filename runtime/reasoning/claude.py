@@ -111,26 +111,18 @@ Respond with JSON only, no markdown:
             logger.warning(f"Semantic cache check failed: {e}")
 
     try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
+        from runtime.reasoning.llm_provider import call_llm
+        result = call_llm(
+            {
                 "model": model_id,
                 "max_tokens": 800,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=30,
         )
-        response.raise_for_status()
     except Exception as e:
-        logger.error(f"Anthropic API call failed for {model_id}: {e}")
-        raise RuntimeError(f"API Error: {e}") 
-
-    result = response.json()
+        logger.error(f"LLM call failed for {model_id}: {e}")
+        raise RuntimeError(f"API Error: {e}")
 
     if "content" in result and result["content"]:
         raw = result["content"][0]["text"].strip()
