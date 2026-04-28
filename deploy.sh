@@ -67,7 +67,12 @@ if [ "${MERIDIAN_RUN_MIGRATIONS_ON_DEPLOY:-false}" = "true" ]; then
 fi
 
 echo "[Deploy] Restarting PM2 services..."
-ssh "$VPS_USER@$VPS_IP" "cd $APP_DIR && set -a && source .env && set +a && pm2 stop ecosystem.config.js 2>/dev/null; pm2 delete ecosystem.config.js 2>/dev/null; pm2 delete agentflux-telegram 2>/dev/null; pm2 start ecosystem.config.js && pm2 save"
+# The telegram bot's Redis singleton lock (agent_flux:telegram_bot_lock) does
+# not self-release on SIGKILL/SIGTERM — when PM2 stops the old process, the
+# lock outlives it, so the new process crash-loops trying to acquire it.
+# Clear the lock pre-restart as a workaround.  Real fix would be a TTL on
+# the lock or a signal handler in runtime/telegram_bot.py.
+ssh "$VPS_USER@$VPS_IP" "cd $APP_DIR && set -a && source .env && set +a && pm2 stop ecosystem.config.js 2>/dev/null; pm2 delete ecosystem.config.js 2>/dev/null; pm2 delete agentflux-telegram 2>/dev/null; redis-cli del agent_flux:telegram_bot_lock >/dev/null 2>&1; pm2 start ecosystem.config.js && pm2 save"
 
 echo "[Deploy] Checking status..."
 ssh "$VPS_USER@$VPS_IP" "pm2 status"
