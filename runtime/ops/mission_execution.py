@@ -381,45 +381,125 @@ def render_execution_plan(plan: dict[str, Any]) -> str:
         lines.append("Why this matters:")
         for item in plan.get("rationale", []):
             lines.append(f"- {item}")
+    footer = _render_liveness_footer(plan)
+    if footer:
+        lines.append("")
+        lines.extend(footer)
     return "\n".join(lines)
 
 
+def _liveness_age_seconds(iso_str: str | None) -> float | None:
+    """Seconds elapsed since an ISO-8601 timestamp, or None on parse failure."""
+    if not iso_str:
+        return None
+    try:
+        s = str(iso_str).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(s)
+    except Exception:
+        return None
+    try:
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (now - dt).total_seconds()
+    except Exception:
+        return None
+
+
+def _format_age(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return "unknown"
+    if seconds < 90:
+        return f"{int(seconds)}s ago"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
+
+
+# How stale is "stale" for each liveness marker, in seconds.
+_LIVENESS_OUTREACH_STALE_SECONDS = int(os.getenv("AGENT_FLUX_LIVENESS_OUTREACH_STALE_SECONDS", "129600"))   # 36h
+_LIVENESS_OUTCOME_STALE_SECONDS  = int(os.getenv("AGENT_FLUX_LIVENESS_OUTCOME_STALE_SECONDS",  "172800"))   # 48h
+_LIVENESS_SCHEDULER_STALE_SECONDS = int(os.getenv("AGENT_FLUX_LIVENESS_SCHEDULER_STALE_SECONDS", "900"))    # 15m
+
+
+def _render_liveness_footer(plan: dict[str, Any]) -> list[str]:
+    """
+    A short footer that names the loop's *most recent successful actions*. If
+    these don't move between briefings, the loop is wedged regardless of what
+    the priorities section says. This is the contract that breaks the
+    'same-message-every-day' failure mode: deadness becomes visible.
+    """
+    try:
+        deal_state  = get_component_state("deal_lifecycle") or {}
+        sched_state = get_component_state("scheduler") or {}
+    except Exception:
+        deal_state = {}
+        sched_state = {}
+    last_outreach_at = (deal_state.get("last_outreach_sent_at") or "").strip() or None
+    last_outcome_at  = (deal_state.get("last_outcome_set_at") or "").strip() or None
+    sched_last_beat  = (sched_state.get("last_heartbeat_at") or "").strip() or None
+
+    outreach_age = _liveness_age_seconds(last_outreach_at)
+    outcome_age  = _liveness_age_seconds(last_outcome_at)
+    sched_age    = _liveness_age_seconds(sched_last_beat)
+
+    flags: list[str] = []
+    if outreach_age is None or outreach_age >= _LIVENESS_OUTREACH_STALE_SECONDS:
+        flags.append("no outreach sent")
+    if outcome_age is None or outcome_age >= _LIVENESS_OUTCOME_STALE_SECONDS:
+        flags.append("no outcome recorded")
+    if sched_age is None or sched_age >= _LIVENESS_SCHEDULER_STALE_SECONDS:
+        flags.append("scheduler heartbeat stale")
+
+    lines = ["Liveness:"]
+    lines.append(f"- Last outreach sent: {_format_age(outreach_age)}")
+    lines.append(f"- Last outcome recorded: {_format_age(outcome_age)}")
+    lines.append(f"- Scheduler beat: {_format_age(sched_age)}")
+    if flags:
+        lines.append(f"⚠ Loop signal: {', '.join(flags)}. The thing that moves the queue isn't moving.")
+    return lines
+
+
 def _plan_signature(plan: dict[str, Any]) -> str:
+    """
+    Hash of the *materially actionable* slice of a plan. Two plans share a
+    signature iff they would lead an operator to the same decision. Order of
+    items inside each queue does not matter — reshuffling a stable set of
+    opportunities should not look like a state change. Derived rendered prose
+    (priorities/immediate_actions) is intentionally excluded — those flap on
+    counts and are downstream of the queues we already hash.
+    """
     action_queue = plan.get("action_queue") or {}
-    operator_queue = action_queue.get("operator_queue") or []
-    clarification_queue = action_queue.get("clarification_queue") or []
-    auto_preview = action_queue.get("auto_queue_preview") or []
+    value = plan.get("value") or {}
+
+    def _queue_ids(items: list, action: bool = False) -> list:
+        out = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            opp_id = item.get("opportunity_id")
+            if opp_id is None:
+                continue
+            if action:
+                out.append((str(opp_id), str(item.get("action_type") or "")))
+            else:
+                out.append(str(opp_id))
+        return sorted(out)
+
     payload = {
-        "operator_queue": [
-            {
-                "id": item.get("opportunity_id"),
-                "action": item.get("action_type"),
-                "domain": item.get("merchant_domain"),
-                "processor": _normalized_context_value(item.get("processor")),
-                "distress": _normalized_context_value(item.get("distress_type")),
-            }
-            for item in operator_queue[:4]
-        ],
-        "clarification_queue": [
-            {"id": item.get("opportunity_id"), "domain": item.get("merchant_domain")}
-            for item in clarification_queue[:3]
-        ],
+        "operator_queue_ids": _queue_ids(action_queue.get("operator_queue"), action=True),
+        "clarification_queue_ids": _queue_ids(action_queue.get("clarification_queue")),
+        "auto_queue_ids": _queue_ids(action_queue.get("auto_queue_preview"), action=True),
+        "operator_queue_size": int(action_queue.get("operator_queue_size", 0) or 0),
         "auto_queue_size": int(action_queue.get("auto_queue_size", 0) or 0),
-        "auto_queue_preview": [
-            {
-                "id": item.get("opportunity_id"),
-                "action": item.get("action_type"),
-                "domain": item.get("merchant_domain"),
-            }
-            for item in auto_preview[:3]
-        ],
-        "reply_review_needed": int((plan.get("value") or {}).get("reply_review_needed", 0) or 0),
-        "follow_ups_due": int((plan.get("value") or {}).get("follow_ups_due", 0) or 0),
-        "outreach_awaiting_approval": int((plan.get("value") or {}).get("outreach_awaiting_approval", 0) or 0),
-        "outreach_ready_to_send": int((plan.get("value") or {}).get("outreach_ready_to_send", 0) or 0),
-        "open_security_incidents": int((plan.get("value") or {}).get("open_security_incidents", 0) or 0),
-        "top_priority": list((plan.get("priorities") or [])[:2]),
-        "top_action": list((plan.get("immediate_actions") or [])[:2]),
+        "reply_review_needed": int(value.get("reply_review_needed", 0) or 0),
+        "follow_ups_due": int(value.get("follow_ups_due", 0) or 0),
+        "outreach_awaiting_approval": int(value.get("outreach_awaiting_approval", 0) or 0),
+        "outreach_ready_to_send": int(value.get("outreach_ready_to_send", 0) or 0),
+        "open_security_incidents": int(value.get("open_security_incidents", 0) or 0),
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
