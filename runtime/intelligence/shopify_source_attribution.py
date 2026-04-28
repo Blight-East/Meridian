@@ -6,7 +6,7 @@ import sys
 from collections import Counter
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -17,7 +17,7 @@ sys.path.insert(0, _dir)
 
 from runtime.intelligence.contact_discovery import get_best_contact
 
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux", pool_pre_ping=True, pool_recycle=300)
+from memory.structured.db import engine
 
 SOURCE_NAME = "shopify_community"
 

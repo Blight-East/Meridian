@@ -8,7 +8,7 @@ import os
 import re
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -21,7 +21,7 @@ from config.logging_config import get_logger
 from memory.structured.db import save_event
 
 logger = get_logger("merchant_signal_classifier")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 CLASS_MERCHANT_OPERATOR = "merchant_operator"
 CLASS_CONSUMER_OR_IRRELEVANT = "consumer_or_irrelevant"

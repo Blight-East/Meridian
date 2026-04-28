@@ -1,7 +1,7 @@
 import sys, os, redis
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 import json
 from runtime.ops.status_cache import (
     SYSTEM_STATUS_CACHE_KEY,
@@ -12,7 +12,7 @@ from runtime.ops.status_cache import (
 )
 from runtime.contact_discovery import get_all_contacts
 
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 SYSTEM_STATUS_QUERY_TIMEOUT_MS = int(os.getenv("AGENT_FLUX_SYSTEM_STATUS_QUERY_TIMEOUT_MS", "1500"))
 

@@ -782,7 +782,7 @@ ANTHROPIC_TOOLS = [
 def _build_operator_state_fresh():
     """Build a comprehensive real-time pipeline status report."""
     from sqlalchemy import create_engine, text
-    engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux", pool_pre_ping=True, pool_recycle=300)
+    from memory.structured.db import engine
 
     state = {}
 

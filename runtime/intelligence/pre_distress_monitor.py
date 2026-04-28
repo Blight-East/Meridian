@@ -1,7 +1,7 @@
 import sys, os, time, json, datetime
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from memory.structured.db import save_event
 from memory.semantic.vector_store import store_embedding, search_similar
 from runtime.ops.alerts import send_operator_alert
@@ -9,7 +9,7 @@ from config.logging_config import get_logger
 from runtime.intelligence.processor_classifier import PROCESSOR_TOKENS
 
 logger = get_logger("pre_distress")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 # Mock sources to simulate gathering from status pages, github, webhooks, etc.
 MOCK_SOURCES = [

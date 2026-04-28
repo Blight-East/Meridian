@@ -18,7 +18,7 @@ import re
 import time
 import requests
 from urllib.parse import urljoin, urlparse
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 try:
     from runtime.intelligence.domain_utils import generate_email_patterns, validate_email_domain, verify_email_smtp, get_mx_servers
@@ -26,7 +26,7 @@ except ImportError:
     from intelligence.domain_utils import generate_email_patterns, validate_email_domain, verify_email_smtp, get_mx_servers
 
 logger = get_logger("contact_discovery")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 # ── Safety limits ──────────────────────────────────────────────────
 MAX_PAGES_PER_MERCHANT = 5

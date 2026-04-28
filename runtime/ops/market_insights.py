@@ -1,11 +1,11 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 
 logger = get_logger("market_insights")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 def generate_insights():
     try:

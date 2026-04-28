@@ -6,10 +6,10 @@ import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 sys.path.insert(0, os.path.dirname(__file__))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from merchant_identity import resolve_merchant_identity
 
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 BATCH_SIZE = 500
 

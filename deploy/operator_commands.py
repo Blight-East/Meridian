@@ -1,10 +1,10 @@
 import sys, os, redis
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 import json
 
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 
 

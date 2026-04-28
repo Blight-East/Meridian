@@ -1,13 +1,13 @@
 import sys, os, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from runtime.investigation.lead_investigator import investigate_lead
 from memory.structured.db import save_event
 from config.logging_config import get_logger
 
 logger = get_logger("investigation")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 def run_investigation():
     start = time.time()

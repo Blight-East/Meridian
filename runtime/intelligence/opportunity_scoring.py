@@ -7,7 +7,7 @@ opportunities using deterministic merchant and signal features.
 import os
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -21,7 +21,7 @@ from memory.structured.db import save_event
 from runtime.ops import conversion_upgrade as _upgrade
 
 logger = get_logger("opportunity_scoring")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 
 def _init_opportunity_score_column():

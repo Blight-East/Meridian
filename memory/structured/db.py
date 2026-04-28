@@ -1,6 +1,7 @@
 import json
 import datetime
 import logging
+import os
 import redis as _redis_lib
 from sqlalchemy import create_engine, text
 
@@ -30,7 +31,14 @@ _reward_redis = _redis_lib.Redis(host="localhost", port=6379, decode_responses=T
 _REWARD_FAILURE_KEY = "learning_reward_write_failures_24h"
 _REWARD_FAILURE_TTL = 86400
 
-DATABASE_URL = "postgresql://postgres@127.0.0.1/agent_flux"
+# DATABASE_URL is read from env (set by ecosystem.config.js per-service or
+# .env). The hardcoded fallback preserves backwards compatibility for any
+# tooling that runs without an env loaded — e.g. ad-hoc scripts during
+# debugging. To wire per-service Postgres roles (af_app, af_scheduler,
+# af_readonly) under db_hardening/roles.sql, override DATABASE_URL in the
+# service's PM2 env section.
+DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://postgres@127.0.0.1/agent_flux").strip() \
+    or "postgresql://postgres@127.0.0.1/agent_flux"
 engine = create_engine(DATABASE_URL, pool_pre_ping=True, pool_recycle=300)
 
 

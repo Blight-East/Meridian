@@ -10,7 +10,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -41,7 +41,7 @@ except ImportError:
     from merchant_graph import _init_relationships_table, _store_relationship
 
 logger = get_logger("merchant_similarity_expansion")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 MAX_NEW_MERCHANTS_PER_RUN = 50
 MAX_QUERIES_PER_SEED = 5

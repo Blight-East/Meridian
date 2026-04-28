@@ -12,7 +12,7 @@ import os
 import sys
 from collections import Counter
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -34,7 +34,7 @@ from runtime.intelligence.merchant_slug import build_merchant_slug, ensure_merch
 from runtime.intelligence.merchant_validation import is_valid_merchant_name
 
 logger = get_logger("merchant_cleanup")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 MAX_SIGNALS_PER_MERCHANT = 25
 NOISY_SOURCES = {"signal_pipeline", "neighbor_discovery", "merchant_graph_co_mention"}

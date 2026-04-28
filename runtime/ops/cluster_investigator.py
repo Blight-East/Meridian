@@ -1,7 +1,7 @@
 import sys, os, json, re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 from memory.structured.db import save_event
 from runtime.ops.alerts import send_operator_alert
@@ -9,7 +9,7 @@ from runtime.intelligence.processor_classifier import classify_processor
 from runtime.intelligence.cluster_reasoning import generate_cluster_reasoning, generate_batch_cluster_reasoning
 
 logger = get_logger("cluster_investigator")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 INVESTIGATION_THRESHOLD = 25
 TREND_CHANGE_THRESHOLD = 50.0

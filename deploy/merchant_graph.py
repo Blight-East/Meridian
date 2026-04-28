@@ -16,7 +16,7 @@ import os
 import re
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -30,7 +30,7 @@ from memory.structured.db import save_event
 from runtime.intelligence.merchant_slug import build_merchant_slug, ensure_merchant_slug_guard
 
 logger = get_logger("merchant_graph")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 GRAPH_BATCH_SIZE = 40
 MIN_SEED_DISTRESS = 5

@@ -1,12 +1,12 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from memory.structured.db import save_event
 from config.logging_config import get_logger
 
 logger = get_logger("trends")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 def detect_trends():
     with engine.connect() as conn:

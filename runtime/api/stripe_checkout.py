@@ -1,12 +1,12 @@
 import os
 import stripe
 from fastapi import APIRouter, Request, HTTPException
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from memory.structured.db import save_event, save_event_canonical, record_outcome
 from config.logging_config import get_logger
 
 logger = get_logger("stripe_checkout")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")

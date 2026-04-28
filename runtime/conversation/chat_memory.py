@@ -2,11 +2,11 @@ import sys, os
 from functools import lru_cache
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 
 logger = get_logger("chat_memory")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux", pool_pre_ping=True, pool_recycle=300)
+from memory.structured.db import engine
 
 
 @lru_cache(maxsize=1)

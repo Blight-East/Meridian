@@ -4,8 +4,8 @@ Test Deal Sourcing Pipeline
 import sys, os, json
 sys.path.insert(0, os.path.dirname(__file__))
 
-from sqlalchemy import create_engine, text
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from sqlalchemy import text
+from memory.structured.db import engine
 
 def run_tests():
     print("Running Deal Sourcing Tests...\n")

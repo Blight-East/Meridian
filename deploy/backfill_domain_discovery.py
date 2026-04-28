@@ -1,7 +1,7 @@
 import os
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(_dir)
@@ -15,7 +15,7 @@ from runtime.intelligence.domain_discovery import (
 )
 
 logger = get_logger("backfill_domain_discovery")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 
 def run_backfill(limit=None):

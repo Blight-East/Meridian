@@ -5,12 +5,12 @@ Generates embeddings for all existing signals in the database that don't have th
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from semantic_memory import store_signal_embedding
 from config.logging_config import get_logger
 
 logger = get_logger("backfill")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 def run():
     logger.info("Starting Semantic Memory Backfill...")

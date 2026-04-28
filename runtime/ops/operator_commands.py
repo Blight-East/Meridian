@@ -2,7 +2,7 @@ import sys, os, redis, re
 from typing import Any
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import json
 from memory.structured.db import save_event
@@ -74,7 +74,7 @@ from runtime.ops.outreach_learning import get_outreach_learning_signal, list_out
 from runtime.contact_discovery import get_all_contacts
 from runtime.safety.control_plane import list_action_envelopes, list_security_incidents
 
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 
 _GMAIL_DISTRESS_NOISE_RE = re.compile(

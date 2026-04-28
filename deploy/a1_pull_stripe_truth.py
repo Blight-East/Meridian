@@ -18,11 +18,11 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 import stripe
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 
 logger = get_logger("stripe_backfill")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux", pool_pre_ping=True)
+from memory.structured.db import engine
 stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
 
 

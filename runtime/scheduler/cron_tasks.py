@@ -21,7 +21,8 @@ if __name__ == "__main__":
 
 import schedule, time, threading, signal
 import redis
-from sqlalchemy import create_engine, text as sa_text
+from sqlalchemy import text as sa_text
+from memory.structured.db import engine as _discovery_engine
 
 from runtime.ops.autonomous_agent import autonomous_market_cycle
 from runtime.ops.reporting import generate_daily_report
@@ -94,7 +95,7 @@ _discovery_lock = threading.Lock()
 _discovery_running = False
 _task_lock = threading.Lock()
 _active_tasks = set()
-_discovery_engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux", pool_pre_ping=True, pool_recycle=300)
+# _discovery_engine imported from memory.structured.db at module top
 
 # Interval bounds (seconds)
 _INTERVAL_HIGH_LOAD = 60    # backlog > 50 pending opportunities

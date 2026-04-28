@@ -9,7 +9,7 @@ import os
 import re
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -21,7 +21,7 @@ sys.path.insert(0, _dir)
 from config.logging_config import get_logger
 
 logger = get_logger("brand_extraction")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 BRAND_EXTRACTION_BATCH_SIZE = 100
 

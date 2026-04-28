@@ -16,7 +16,7 @@ import os
 import re
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -35,7 +35,7 @@ except ImportError:
     from merchant_canonicalization import check_and_log_canonical_match
 
 logger = get_logger("merchant_graph")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 GRAPH_BATCH_SIZE = 40
 MIN_SEED_DISTRESS = 5

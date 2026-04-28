@@ -4,7 +4,7 @@ Merchant-level risk scoring for the merchant intelligence graph.
 import os
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -21,7 +21,7 @@ from runtime.intelligence.merchant_graph_store import (
 )
 
 logger = get_logger("merchant_risk_scoring")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 MAX_MERCHANTS_PER_RUN = 500
 NEGATIVE_SIGNAL_TERMS = (

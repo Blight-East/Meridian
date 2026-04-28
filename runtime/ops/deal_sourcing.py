@@ -7,7 +7,7 @@ import sys, os, json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import requests
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 from memory.structured.db import save_event
 from runtime.intelligence.opportunity_queue_quality import (
@@ -17,7 +17,7 @@ from runtime.intelligence.opportunity_queue_quality import (
 from runtime.ops import conversion_upgrade as _upgrade
 
 logger = get_logger("deal_sourcing")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 MAX_OPPORTUNITIES_PER_CYCLE = 10
 MIN_CONTACT_CONFIDENCE = 0.85

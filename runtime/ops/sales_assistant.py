@@ -12,13 +12,13 @@ import json
 import requests
 from datetime import datetime
 from dotenv import dotenv_values
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from runtime.ops.alerts import send_operator_alert
 from memory.structured.db import save_event
 from config.logging_config import get_logger
 
 logger = get_logger("sales_assistant")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 ENV_FILE_PATH = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
 
 ANTHROPIC_API_KEY = None

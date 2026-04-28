@@ -1,7 +1,7 @@
 import sys, os, re
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from memory.structured.db import save_event
 from memory.semantic.vector_store import search_similar
 from runtime.ops.alerts import send_operator_alert
@@ -9,7 +9,7 @@ from config.logging_config import get_logger
 from runtime.intelligence.processor_classifier import classify_processor
 
 logger = get_logger("processor_discovery")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 def run_processor_discovery():
     logger.info("Running processor failure discovery...")

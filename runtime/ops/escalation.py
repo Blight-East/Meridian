@@ -194,7 +194,7 @@ def pipeline_health_check():
     Called every 60 minutes from the scheduler.
     """
     from sqlalchemy import create_engine, text
-    engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+    from memory.structured.db import engine
 
     issues = []
 

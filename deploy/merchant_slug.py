@@ -9,7 +9,7 @@ import re
 import sys
 import threading
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -22,7 +22,7 @@ from config.logging_config import get_logger
 from memory.structured.db import save_event
 
 logger = get_logger("merchant_slug")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 _lock = threading.Lock()
 _initialized = False
 
