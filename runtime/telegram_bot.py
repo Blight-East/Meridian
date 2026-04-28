@@ -1,5 +1,5 @@
 import asyncio
-import sys, os, requests, json, time, re, mimetypes
+import sys, os, requests, json, time, re, mimetypes, signal
 import threading
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
@@ -114,15 +114,69 @@ _LOCK_REFRESH_STOP: "threading.Event | None" = None
 _LOCK_REFRESH_THREAD: "threading.Thread | None" = None
 
 
-def _acquire_singleton_lock() -> bool:
+def _holder_is_dead(holder: str | None) -> bool:
+    """
+    Return True if `holder` looks like a token from this host whose PID is
+    no longer alive. The token format is "<nodename>:<pid>". A holder on a
+    DIFFERENT host can't be checked from here, so we conservatively return
+    False — the TTL will eventually clear it.
+    """
+    if not holder:
+        return False
     try:
-        return bool(_r.set(TELEGRAM_LOCK_KEY, _LOCK_HOLDER_TOKEN, nx=True, ex=TELEGRAM_LOCK_TTL))
+        nodename, pid_str = holder.rsplit(":", 1)
+        pid = int(pid_str)
+    except Exception:
+        return False
+    if nodename != os.uname().nodename:
+        return False  # foreign host; don't touch
+    if pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        # signal 0 is the cheap "is this PID alive?" probe — no signal sent.
+        os.kill(pid, 0)
+        return False  # alive
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False  # alive but owned by someone else; don't reap
+
+
+def _acquire_singleton_lock() -> bool:
+    """
+    Try to acquire the singleton lock. If a stale lock is held by a dead PID
+    on this host, force-clear it and retry once. This is the recovery path
+    for processes killed by SIGKILL / OOM / kernel that didn't get to run
+    their atexit handler — i.e. the failure shape that recurred across
+    every prod deploy until the deploy.sh redis-cli del workaround.
+    """
+    try:
+        if _r.set(TELEGRAM_LOCK_KEY, _LOCK_HOLDER_TOKEN, nx=True, ex=TELEGRAM_LOCK_TTL):
+            return True
+        # Lock held — check if the holder is a corpse from this host
+        held = _r.get(TELEGRAM_LOCK_KEY)
+        if _holder_is_dead(held):
+            logger.warning(
+                "telegram singleton lock held by dead PID (%s); force-clearing and retrying",
+                held,
+            )
+            # Compare-and-delete: only clear if the holder is still the same dead token
+            # (a Lua script would be ideal here; this two-step is fine since we just
+            # confirmed the holder above and any race only delays acquisition by one TTL).
+            if _r.get(TELEGRAM_LOCK_KEY) == held:
+                _r.delete(TELEGRAM_LOCK_KEY)
+            return bool(_r.set(TELEGRAM_LOCK_KEY, _LOCK_HOLDER_TOKEN, nx=True, ex=TELEGRAM_LOCK_TTL))
+        return False
     except Exception as e:
         logger.warning(f"telegram lock acquire failed (redis error: {e}); proceeding without lock")
         return True  # fail-open on Redis outage so the bot still runs
 
 
-def _release_singleton_lock() -> None:
+def _release_singleton_lock(*_signal_args) -> None:
+    """
+    Release the lock if we still hold it. Variadic args are for use as a
+    signal handler (signum, frame) — the values are ignored.
+    """
     try:
         # Only release if we still hold it
         held = _r.get(TELEGRAM_LOCK_KEY)
@@ -2577,6 +2631,17 @@ def run(token):
     _start_lock_refresher()
     import atexit
     atexit.register(_release_singleton_lock)
+    # Cover the gap that atexit alone doesn't: PM2's `pm2 stop` sends SIGINT
+    # (and SIGKILL after kill_timeout). The SIGINT handler runs the release;
+    # SIGKILL is uncatchable but the next process now self-heals via the
+    # dead-PID check in _acquire_singleton_lock.
+    for _sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(_sig, _release_singleton_lock)
+        except (ValueError, OSError):
+            # signal.signal raises if not on the main thread (e.g. test
+            # harnesses); atexit + dead-PID check are sufficient fallbacks.
+            pass
 
     app = ApplicationBuilder().token(token).post_init(post_init).post_shutdown(post_shutdown).build()
     heartbeat(
