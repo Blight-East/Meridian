@@ -45,7 +45,7 @@ from memory.structured.db import (
     save_learning_feedback,
     get_reward_write_failures_24h,
 )
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 from runtime.api.stripe_checkout import router as stripe_router
 from entity_taxonomy import classify_entity, CLASS_CONSUMER_COMPLAINT, CLASS_MERCHANT_DISTRESS
@@ -84,7 +84,7 @@ except RuntimeError as _e:
     logger.critical(f"STARTUP BLOCKED: {_e}")
     raise
 
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux", pool_pre_ping=True, pool_recycle=300)
+from memory.structured.db import engine
 app = FastAPI(title="Agent Flux Control Node")
 app.add_middleware(
     CORSMiddleware,

@@ -1,14 +1,14 @@
 import sys, os, redis
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from runtime.ops.alerts import send_operator_alert
 from runtime.ops.market_insights import generate_insights
 from config.logging_config import get_logger
 from entity_taxonomy import classify_entity, CLASS_CONSUMER_COMPLAINT, ENTITY_TYPE_PROCESSOR, ENTITY_TYPE_BANK, ENTITY_TYPE_PLATFORM
 
 logger = get_logger("reporting")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 
 

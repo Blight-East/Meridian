@@ -7,11 +7,11 @@ import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from sentence_transformers import SentenceTransformer
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 
 logger = get_logger("semantic_memory")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 # Load globally once on module init
 logger.info("Loading SentenceTransformer model 'all-MiniLM-L6-v2'...")

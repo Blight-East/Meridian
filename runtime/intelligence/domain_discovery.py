@@ -12,7 +12,7 @@ import sys
 from urllib.parse import urlparse
 
 import dns.resolver
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -26,7 +26,7 @@ from memory.structured.db import save_event
 from tools.web_search import web_search
 
 logger = get_logger("domain_discovery")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 DISCOVERY_BATCH_SIZE = 50
 SEARCH_CONFIDENCE = 0.7

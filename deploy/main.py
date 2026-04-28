@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import redis, json
 from memory.structured.db import get_all_tasks, get_all_signals, get_all_events
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 from runtime.api.stripe_checkout import router as stripe_router
 from entity_taxonomy import classify_entity, CLASS_CONSUMER_COMPLAINT, ENTITY_TYPE_PROCESSOR, ENTITY_TYPE_BANK, ENTITY_TYPE_PLATFORM
@@ -15,7 +15,7 @@ from merchant_identity import get_merchant_profile, get_merchant_signals
 from contact_discovery import get_all_contacts
 
 logger = get_logger("api")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 app = FastAPI(title="Agent Flux Control Node")
 app.add_middleware(
     CORSMiddleware,

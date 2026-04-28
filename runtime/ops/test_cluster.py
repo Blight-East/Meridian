@@ -1,8 +1,8 @@
 import sys
 sys.path.insert(0, "/opt/agent-flux")
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 with engine.connect() as conn:
     print("Inserting mock cluster...")

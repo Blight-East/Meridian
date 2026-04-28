@@ -11,13 +11,13 @@ import os
 import json
 import requests
 from datetime import datetime
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from runtime.ops.alerts import send_operator_alert
 from memory.structured.db import save_event
 from config.logging_config import get_logger
 
 logger = get_logger("sales_assistant")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 ANTHROPIC_API_KEY = None
 

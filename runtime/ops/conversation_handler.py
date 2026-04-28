@@ -5,13 +5,13 @@ Simulates or processes incoming messages from merchants, parses intent, and auto
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 from integrations.email_sender import send_outreach_email
 from conversation.chat_engine import generate_chat_response
 
 logger = get_logger("conversation_handler")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 def handle_reply(merchant_id: int, contact_email: str, incoming_message: str):
     """

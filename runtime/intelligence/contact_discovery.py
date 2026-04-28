@@ -14,7 +14,7 @@ from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 import redis
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 # Dynamically find project root
 _dir = os.path.dirname(os.path.abspath(__file__))
@@ -46,7 +46,7 @@ except ImportError:
     )
 
 logger = get_logger("contact_discovery")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 r = redis.Redis(host="localhost", port=6379, decode_responses=True)
 _SCHEMA_READY = False
 

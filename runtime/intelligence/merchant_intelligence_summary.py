@@ -5,7 +5,7 @@ import datetime
 import os
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -16,7 +16,7 @@ sys.path.insert(0, _dir)
 
 from runtime.intelligence.merchant_graph_store import init_merchant_graph_tables
 
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 
 def _serialize(value):

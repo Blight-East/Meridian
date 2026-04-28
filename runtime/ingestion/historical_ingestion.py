@@ -18,14 +18,14 @@ import feedparser
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 from memory.structured.db import save_event
 from runtime.intelligence.ingestion import process_and_store_signal
 from runtime.intelligence.distress_queries import DISTRESS_QUERIES, REDDIT_SUBREDDITS
 
 logger = get_logger("historical_ingestion")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 # ── Configuration ────────────────────────────────────────────────────────────
 MAX_QUERIES_PER_CYCLE = 20

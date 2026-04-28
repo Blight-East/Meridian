@@ -6,7 +6,7 @@ import sys, os, time, random
 from datetime import datetime, timezone, timedelta
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 from memory.structured.db import save_event
 from runtime.integrations.email_sender import send_outreach_email
@@ -16,7 +16,7 @@ from runtime.conversation.chat_engine import generate_chat_response
 from runtime.ops.operator_alerts import send_operator_alert
 
 logger = get_logger("autonomous_sales")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 MAX_OUTREACH_PER_CYCLE = 10
 AUTONOMOUS_SALES_ENABLED = True

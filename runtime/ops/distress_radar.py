@@ -1,13 +1,13 @@
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from runtime.ops.alerts import send_operator_alert
 from memory.structured.db import save_event
 from config.logging_config import get_logger
 
 logger = get_logger("distress_radar")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 def run_distress_radar():
     logger.info("Running Merchant Distress Radar...")

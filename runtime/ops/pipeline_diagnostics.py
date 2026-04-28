@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import time
 import subprocess
 import json
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from config.logging_config import get_logger
 from runtime.ops.operator_alerts import send_operator_alert
 from runtime.intelligence.contact_discovery import run_contact_discovery
@@ -19,7 +19,7 @@ from runtime.ops.cluster_investigator import run_cluster_investigation
 from memory.structured.db import save_event
 
 logger = get_logger("pipeline_diagnostics")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux", pool_pre_ping=True, pool_recycle=300)
+from memory.structured.db import engine
 
 # Prevent identical repairs more than once per hour
 REPAIR_COOLDOWN_SECONDS = 3600

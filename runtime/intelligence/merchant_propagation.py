@@ -12,7 +12,7 @@ from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 _dir = os.path.dirname(os.path.abspath(__file__))
 for _ in range(5):
@@ -34,7 +34,7 @@ from runtime.intelligence.merchant_slug import build_merchant_slug, ensure_merch
 from tools.web_search import web_search
 
 logger = get_logger("merchant_propagation")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
 
 MAX_SEEDS_PER_CYCLE = 20
 MAX_NEW_MERCHANTS_PER_SEED = 5
