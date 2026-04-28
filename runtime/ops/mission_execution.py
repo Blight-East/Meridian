@@ -427,10 +427,25 @@ _LIVENESS_SCHEDULER_STALE_SECONDS = int(os.getenv("AGENT_FLUX_LIVENESS_SCHEDULER
 
 def _render_liveness_footer(plan: dict[str, Any]) -> list[str]:
     """
-    A short footer that names the loop's *most recent successful actions*. If
-    these don't move between briefings, the loop is wedged regardless of what
-    the priorities section says. This is the contract that breaks the
-    'same-message-every-day' failure mode: deadness becomes visible.
+    A short footer that names the loop's *most recent successful actions* and
+    diagnoses the *cause* of any silence — distinguishing four states:
+
+      WEDGED    scheduler heartbeat stale → "⚠ Loop wedged"
+                The system is broken. Investigate the scheduler.
+
+      WAITING   loop healthy + outreach/outcome stale + operator queue has items
+                → "ℹ Queue waiting on operator"
+                The system is working as designed but the human is the bottleneck.
+                This was the failure mode that the original Liveness footer
+                misclassified as "wedged" — same warning text, very different
+                root cause and remedy.
+
+      IDLE      loop healthy + outreach/outcome stale + queue empty
+                → "ℹ Loop idle"
+                Nothing to do; not a problem.
+
+      ACTIVE    recent outreach or outcome → no warning line emitted
+                System is running normally.
     """
     try:
         deal_state  = get_component_state("deal_lifecycle") or {}
@@ -446,20 +461,41 @@ def _render_liveness_footer(plan: dict[str, Any]) -> list[str]:
     outcome_age  = _liveness_age_seconds(last_outcome_at)
     sched_age    = _liveness_age_seconds(sched_last_beat)
 
-    flags: list[str] = []
-    if outreach_age is None or outreach_age >= _LIVENESS_OUTREACH_STALE_SECONDS:
-        flags.append("no outreach sent")
-    if outcome_age is None or outcome_age >= _LIVENESS_OUTCOME_STALE_SECONDS:
-        flags.append("no outcome recorded")
-    if sched_age is None or sched_age >= _LIVENESS_SCHEDULER_STALE_SECONDS:
-        flags.append("scheduler heartbeat stale")
+    sched_stale    = sched_age is None or sched_age >= _LIVENESS_SCHEDULER_STALE_SECONDS
+    outreach_stale = outreach_age is None or outreach_age >= _LIVENESS_OUTREACH_STALE_SECONDS
+    outcome_stale  = outcome_age is None or outcome_age >= _LIVENESS_OUTCOME_STALE_SECONDS
+
+    # How many items are sitting in the operator-attention queues right now?
+    action_queue = plan.get("action_queue") or {}
+    operator_pending = (
+        int(action_queue.get("operator_queue_size", 0) or 0)
+        + len(action_queue.get("clarification_queue") or [])
+    )
+    auto_in_flight = int(action_queue.get("auto_queue_size", 0) or 0)
 
     lines = ["Liveness:"]
     lines.append(f"- Last outreach sent: {_format_age(outreach_age)}")
     lines.append(f"- Last outcome recorded: {_format_age(outcome_age)}")
     lines.append(f"- Scheduler beat: {_format_age(sched_age)}")
-    if flags:
-        lines.append(f"⚠ Loop signal: {', '.join(flags)}. The thing that moves the queue isn't moving.")
+
+    if sched_stale:
+        lines.append(
+            "⚠ Loop wedged: scheduler heartbeat stale. The thing that moves the queue isn't moving — investigate the scheduler."
+        )
+    elif outreach_stale and outcome_stale:
+        if operator_pending > 0:
+            lines.append(
+                f"ℹ Queue waiting on operator: {operator_pending} item(s) need your review. The loop is healthy; it's waiting on you."
+            )
+        elif auto_in_flight > 0:
+            # System is processing but nothing has yet completed to a send/outcome
+            lines.append(
+                f"ℹ Loop processing: {auto_in_flight} step(s) auto-handling. No completed sends/outcomes yet."
+            )
+        else:
+            lines.append(
+                "ℹ Loop idle: no operator queue, no auto-handling, no recent sends. Nothing to do."
+            )
     return lines
 
 
