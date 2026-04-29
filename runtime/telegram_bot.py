@@ -49,6 +49,7 @@ from runtime.ops.operator_commands import (
     apply_critic_rewrite_command,
     advance_top_queue_opportunity_command,
     draft_follow_up_for_opportunity_command,
+    draft_outreach_for_opportunity_command,
     list_sent_outreach_needing_follow_up_command,
     mark_outreach_outcome_command,
     run_mission_execution_loop_command,
@@ -431,6 +432,17 @@ def _match_conversational_approval(message: str):
     )
     if score_reasoning_match:
         return {"kind": "show_opportunity_reasoning", "opportunity_id": int(score_reasoning_match.group("opportunity_id"))}
+
+    draft_outreach_match = re.match(
+        r"^(?:draft|prepare|write|generate)\s+(?:the\s+)?(?:initial\s+)?(?:outreach|gmail|email)(?:\s+draft)?(?:\s+for)?\s+(?:opportunity\s+|opp\s+)?(?P<opportunity_id>\d+)$",
+        text,
+        re.I,
+    )
+    if draft_outreach_match:
+        return {
+            "kind": "draft_outreach_initial",
+            "opportunity_id": int(draft_outreach_match.group("opportunity_id")),
+        }
 
     approve_draft_match = re.match(
         r"^(?:approve)\s+(?:the\s+)?(?:local\s+|outreach\s+)?draft\s+(?P<opportunity_id>\d+)(?:\s*[:\-]\s*(?P<notes>.+))?$",
@@ -1836,6 +1848,33 @@ async def _handle_conversational_control(update: Update, message_text: str):
                     result.get("opportunity_id"),
                 ),
             )
+        return True
+    if kind == "draft_outreach_initial":
+        opportunity_id = int(match.get("opportunity_id") or 0)
+        result = draft_outreach_for_opportunity_command(
+            opportunity_id=opportunity_id,
+            allow_best_effort=True,
+        )
+        save_event(
+            "operator_draft_override",
+            {
+                "opportunity_id": opportunity_id,
+                "source": "telegram_draft_outreach_command",
+                "succeeded": not bool(result.get("error")),
+                "error": result.get("error") or "",
+            },
+        )
+        if result.get("error"):
+            await _reply_and_record(
+                update.message,
+                "I could not draft outreach for opportunity {}: {}".format(
+                    opportunity_id,
+                    result.get("error"),
+                ),
+            )
+        else:
+            shown = show_local_outreach_draft_command(opportunity_id=opportunity_id)
+            await _reply_and_record(update.message, _render_local_outreach_draft(shown))
         return True
     if kind == "draft_follow_up":
         result = draft_follow_up_for_opportunity_command(
