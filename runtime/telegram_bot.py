@@ -378,7 +378,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_local_outreach_draft"}
 
     specific_draft_match = re.match(
-        r"^(?:show|review)\s+(?:the\s+)?(?:local\s+|outreach\s+)?draft\s+(?P<opportunity_id>\d+)$",
+        r"^(?:show|review)\s+(?:the\s+)?(?:local\s+|outreach\s+)?draft\s+#?(?P<opportunity_id>\d+)$",
         text,
         re.I,
     )
@@ -386,7 +386,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_local_outreach_draft", "opportunity_id": int(specific_draft_match.group("opportunity_id"))}
 
     critic_rewrite_match = re.match(
-        r"^(?:apply|use|take)\s+(?:the\s+)?critic\s+rewrite\s+(?P<opportunity_id>\d+)$",
+        r"^(?:apply|use|take)\s+(?:the\s+)?critic\s+rewrite\s+#?(?P<opportunity_id>\d+)$",
         text,
         re.I,
     )
@@ -394,7 +394,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "apply_critic_rewrite", "opportunity_id": int(critic_rewrite_match.group("opportunity_id"))}
 
     workbench_match = re.match(
-        r"^(?:show|review|open)\s+(?:the\s+)?(?:opportunity|case|workbench)\s+(?P<opportunity_id>\d+)$",
+        r"^(?:show|review|open)\s+(?:the\s+)?(?:opportunity|case|workbench)\s+#?(?P<opportunity_id>\d+)$",
         text,
         re.I,
     )
@@ -402,7 +402,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_opportunity_workbench", "opportunity_id": int(workbench_match.group("opportunity_id"))}
 
     opportunity_fit_match = re.match(
-        r"^(?:show|review|open|explain)\s+(?:the\s+)?(?:opportunity|case)\s+fit\s+(?P<opportunity_id>\d+)$",
+        r"^(?:show|review|open|explain)\s+(?:the\s+)?(?:opportunity|case)\s+fit\s+#?(?P<opportunity_id>\d+)$",
         text,
         re.I,
     )
@@ -410,7 +410,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_opportunity_fit", "opportunity_id": int(opportunity_fit_match.group("opportunity_id"))}
 
     opportunity_fit_why_match = re.match(
-        r"^(?:why\s+is)\s+(?:opportunity\s+)?(?P<opportunity_id>\d+)\s+(?:high\s+conviction|blocked|suppressed|qualified).*$",
+        r"^(?:why\s+is)\s+(?:opportunity\s+)?#?(?P<opportunity_id>\d+)\s+(?:high\s+conviction|blocked|suppressed|qualified).*$",
         text,
         re.I,
     )
@@ -418,7 +418,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_opportunity_fit", "opportunity_id": int(opportunity_fit_why_match.group("opportunity_id"))}
 
     opportunity_reasoning_match = re.match(
-        r"^(?:show|review|open)\s+(?:the\s+)?(?:opportunity\s+)?reasoning\s+(?P<opportunity_id>\d+)$",
+        r"^(?:show|review|open)\s+(?:the\s+)?(?:opportunity\s+)?reasoning\s+#?(?P<opportunity_id>\d+)$",
         text,
         re.I,
     )
@@ -426,7 +426,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_opportunity_reasoning", "opportunity_id": int(opportunity_reasoning_match.group("opportunity_id"))}
 
     score_reasoning_match = re.match(
-        r"^(?:why\s+did\s+you\s+score|why\s+did\s+you\s+rank)\s+(?:opportunity\s+)?(?P<opportunity_id>\d+).*$",
+        r"^(?:why\s+did\s+you\s+score|why\s+did\s+you\s+rank)\s+(?:opportunity\s+)?#?(?P<opportunity_id>\d+).*$",
         text,
         re.I,
     )
@@ -434,7 +434,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_opportunity_reasoning", "opportunity_id": int(score_reasoning_match.group("opportunity_id"))}
 
     draft_outreach_match = re.match(
-        r"^(?:draft|prepare|write|generate)\s+(?:the\s+)?(?:initial\s+)?(?:outreach|gmail|email)(?:\s+draft)?(?:\s+for)?\s+(?:opportunity\s+|opp\s+)?(?P<opportunity_id>\d+)$",
+        r"^(?:draft|prepare|write|generate)\s+(?:the\s+)?(?:initial\s+)?(?:outreach|gmail|email)(?:\s+draft)?(?:\s+for)?\s+(?:opportunity\s+|opp\s+)?#?(?P<opportunity_id>\d+)$",
         text,
         re.I,
     )
@@ -445,7 +445,7 @@ def _match_conversational_approval(message: str):
         }
 
     approve_draft_match = re.match(
-        r"^(?:approve)\s+(?:the\s+)?(?:local\s+|outreach\s+)?draft\s+(?P<opportunity_id>\d+)(?:\s*[:\-]\s*(?P<notes>.+))?$",
+        r"^(?:approve)\s+(?:the\s+)?(?:local\s+|outreach\s+)?draft\s+#?(?P<opportunity_id>\d+)(?:\s*[:\-]\s*(?P<notes>.+))?$",
         text,
         re.I,
     )
@@ -457,7 +457,7 @@ def _match_conversational_approval(message: str):
         }
 
     approve_outreach_match = re.match(
-        r"^(?:approve)\s+outreach\s+(?P<opportunity_id>\d+)(?:\s*[:\-]\s*(?P<notes>.+))?$",
+        r"^(?:approve)\s+outreach\s+#?(?P<opportunity_id>\d+)(?:\s*[:\-]\s*(?P<notes>.+))?$",
         text,
         re.I,
     )
@@ -469,7 +469,7 @@ def _match_conversational_approval(message: str):
         }
 
     rewrite_match = re.match(
-        r"^(?:rewrite|tighten|edit)\s+(?:the\s+)?draft\s+(?P<opportunity_id>\d+)(?:\s+(?P<style>sharper|softer|shorter|direct|standard))?(?:\s*[:\-]\s*(?P<instructions>.+))?$",
+        r"^(?:rewrite|tighten|edit)\s+(?:the\s+)?draft\s+#?(?P<opportunity_id>\d+)(?:\s+(?P<style>sharper|softer|shorter|direct|standard))?(?:\s*[:\-]\s*(?P<instructions>.+))?$",
         text,
         re.I,
     )
@@ -482,7 +482,7 @@ def _match_conversational_approval(message: str):
         }
 
     send_draft_match = re.match(
-        r"^(?:(?:send)|(?:approve\s+and\s+send))\s+(?:the\s+)?draft\s+(?P<opportunity_id>\d+)$",
+        r"^(?:(?:send)|(?:approve\s+and\s+send))\s+(?:the\s+)?draft\s+#?(?P<opportunity_id>\d+)$",
         text,
         re.I,
     )
@@ -493,7 +493,7 @@ def _match_conversational_approval(message: str):
         }
 
     follow_up_draft_match = re.match(
-        r"^(?:draft|prepare|write)\s+(?:a\s+)?follow[\s-]?up\s+(?:for\s+)?(?P<opportunity_id>\d+)(?:\s+(?P<style>sharper|softer|shorter|direct|standard))?(?:\s*[:\-]\s*(?P<instructions>.+))?$",
+        r"^(?:draft|prepare|write)\s+(?:a\s+)?follow[\s-]?up\s+(?:for\s+)?#?(?P<opportunity_id>\d+)(?:\s+(?P<style>sharper|softer|shorter|direct|standard))?(?:\s*[:\-]\s*(?P<instructions>.+))?$",
         text,
         re.I,
     )
@@ -506,7 +506,7 @@ def _match_conversational_approval(message: str):
         }
 
     outcome_match = re.match(
-        r"^(?:mark)\s+(?:opportunity|draft|case)\s+(?P<opportunity_id>\d+)\s+(?P<outcome>won|lost|ignored)(?:\s*[:\-]\s*(?P<notes>.+))?$",
+        r"^(?:mark)\s+(?:opportunity|draft|case)\s+#?(?P<opportunity_id>\d+)\s+(?P<outcome>won|lost|ignored)(?:\s*[:\-]\s*(?P<notes>.+))?$",
         text,
         re.I,
     )
@@ -675,7 +675,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_outcome_review_queue", "limit": 5}
 
     review_reply_match = re.match(
-        r"^(?:show|review|open)\s+(?:reply|response)\s+(?P<opportunity_id>\d+)$",
+        r"^(?:show|review|open)\s+(?:reply|response)\s+#?(?P<opportunity_id>\d+)$",
         text,
         re.I,
     )
@@ -683,7 +683,7 @@ def _match_conversational_approval(message: str):
         return {"kind": "show_reply_review", "opportunity_id": int(review_reply_match.group("opportunity_id"))}
 
     apply_outcome_match = re.match(
-        r"^(?:apply)\s+(?:the\s+)?suggested\s+outcome\s+(?P<opportunity_id>\d+)(?:\s*[:\-]\s*(?P<notes>.+))?$",
+        r"^(?:apply)\s+(?:the\s+)?suggested\s+outcome\s+#?(?P<opportunity_id>\d+)(?:\s*[:\-]\s*(?P<notes>.+))?$",
         text,
         re.I,
     )
