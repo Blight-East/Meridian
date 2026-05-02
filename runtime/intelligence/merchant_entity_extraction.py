@@ -95,6 +95,59 @@ GENERIC_LEADING_WORDS = {
     "Why",
 }
 
+# Single-word extractor pollution. Real merchants almost never have a
+# brand name that's a common English word; the title-case regex will
+# however produce single-word candidates from any sentence. Reject when
+# the canonical key (lowercased) matches one of these AND the candidate
+# is exactly one word.
+#
+# Audit on prod 2026-05-02 found 42+ such opportunities created (japan,
+# policy, exactly, additionally, namely, kudos, thank, every, etc.). The
+# bug shipped real outreach to finance@<generic-word>.com addresses.
+# This filter prevents the next batch.
+ENGLISH_NOISE_SINGLE_WORD_CANDIDATES = frozenset({
+    # Adverbs / adjectives / sentence-filler
+    "seems", "usually", "after", "about", "something", "additionally",
+    "thank", "kudos", "anyway", "however", "therefore", "furthermore",
+    "meanwhile", "nevertheless", "obviously", "clearly", "apparently",
+    "basically", "actually", "generally", "specifically", "particularly",
+    "especially", "unfortunately", "fortunately", "certainly", "definitely",
+    "probably", "possibly", "maybe", "perhaps", "indeed", "surely", "finally",
+    "merely", "simply", "essentially", "naturally", "presumably",
+    "exactly", "literally", "completely", "totally", "entirely", "mostly",
+    "somewhat", "fairly", "quite", "rather", "barely", "hardly",
+    # Conjunctions / connectors
+    "additionally", "moreover", "however", "namely", "indeed",
+    # Country / region nouns
+    "japan", "spain", "france", "germany", "canada", "mexico", "brazil",
+    "china", "india", "russia", "italy", "britain", "australia", "europe",
+    "america", "asia", "africa", "california", "texas", "florida", "ohio",
+    # Generic business / payment nouns — never a real merchant brand
+    "policy", "policies", "disclaimer", "disclaimers", "terms", "agreement",
+    "subscription", "subscriptions", "checkout", "billing", "invoice",
+    "invoices", "receipt", "receipts",
+    "account", "accounts", "balance", "transaction", "transactions",
+    "refund", "refunds", "deposit", "deposits", "fees", "charges",
+    "chargeback", "chargebacks", "dispute", "disputes",
+    "customer", "customers", "user", "users",
+    "payment", "payments", "service", "services", "platform", "platforms",
+    "merchant", "merchants", "company", "business", "store", "shop",
+    "brand", "company", "team",
+    # Common nouns observed in extractor pollution on 3/17 + 5/2 batches
+    "replace", "every", "domain", "cryptocurrencies", "whats", "lavabit",
+    "wolfire", "every", "exactly",
+    "learning", "tutorial", "guide", "guides", "review", "reviews",
+    "feedback", "rating", "ratings", "warning", "warnings",
+    "alert", "alerts", "notification", "notifications", "update", "updates",
+    "feature", "features", "option", "options", "setting", "settings",
+    "issue", "issues", "problem", "problems", "error", "errors",
+    "question", "questions", "answer", "answers", "support", "help",
+    "info", "information", "data", "report", "reports",
+    "alternative", "alternatives", "comparison", "comparisons",
+    # Common ambiguous abbreviations
+    "aka", "etc", "fyi", "tldr", "imo", "imho", "lol", "ymmv", "iirc",
+})
+
 TITLE_CASE_PATTERN = re.compile(
     r"\b([A-Z][A-Za-z0-9&'\-]{1,29}(?:\s+[A-Z][A-Za-z0-9&'\-]{1,29}){1,3})\b"
 )
@@ -239,6 +292,17 @@ def _is_viable_candidate(candidate, content):
         return False
     candidate_tokens = {token.lower() for token in re.findall(r"[A-Za-z0-9]+", cleaned)}
     if candidate_tokens & BLOCKED_CANDIDATE_TOKENS:
+        return False
+    # Single-word english-noise reject. Compound brands like "Japan
+    # Airlines" or "Seems Coffee" still pass — only fires when the
+    # candidate is exactly one word AND that word is a known generic
+    # English / business noun. Restored from prior implementation that
+    # was dropped during the 4/28 stabilization sprint; without this
+    # filter the prod merchant_opportunities table accumulated 42+
+    # garbage rows (japan, policy, exactly, additionally, etc.) and
+    # fired real outreach to finance@<word>.com addresses.
+    if len(words) == 1 and canonical_key.lower() in ENGLISH_NOISE_SINGLE_WORD_CANDIDATES:
+        logger.info("extractor_reject english_noise: %s", cleaned)
         return False
 
     processor_hint = None
