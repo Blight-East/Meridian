@@ -23,6 +23,8 @@ from runtime.ops import conversion_upgrade as _upgrade
 logger = get_logger("opportunity_scoring")
 from memory.structured.db import engine
 
+_MERCHANT_SCORE_COLUMNS = None
+
 
 def _init_opportunity_score_column():
     # DB hardening (Phase 1): serialize the ALTER across the fleet so the
@@ -31,6 +33,8 @@ def _init_opportunity_score_column():
     from runtime.ops.schema_migrations import with_advisory_lock as _with_lock
 
     with _with_lock("opportunity_score_column"), engine.connect() as conn:
+        conn.execute(text("SET lock_timeout = '10s'"))
+        conn.execute(text("SET statement_timeout = '60s'"))
         conn.execute(text("""
             ALTER TABLE merchants
             ADD COLUMN IF NOT EXISTS opportunity_score FLOAT DEFAULT 0,
@@ -41,16 +45,35 @@ def _init_opportunity_score_column():
         conn.commit()
 
 
+def _merchant_score_columns(conn, force=False):
+    global _MERCHANT_SCORE_COLUMNS
+    if _MERCHANT_SCORE_COLUMNS is not None and not force:
+        return _MERCHANT_SCORE_COLUMNS
+    rows = conn.execute(text("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'merchants'
+          AND column_name IN ('opportunity_score', 'status', 'confidence_score', 'urgency_score')
+    """)).fetchall()
+    _MERCHANT_SCORE_COLUMNS = {row[0] for row in rows}
+    return _MERCHANT_SCORE_COLUMNS
+
+
 def _clamp_score(raw_score):
     return max(0.0, min(float(raw_score), 100.0))
 
 
 def score_merchants(limit=100):
-    _init_opportunity_score_column()
+    try:
+        _init_opportunity_score_column()
+    except Exception as exc:
+        logger.warning("Merchant-score schema repair deferred: %s", exc)
 
     scored = 0
 
     with engine.connect() as conn:
+        merchant_columns = _merchant_score_columns(conn, force=True)
+        supports_urgency_score = "urgency_score" in merchant_columns
         merchants = conn.execute(text("""
             SELECT m.id, m.canonical_name, m.distress_score, m.domain, m.status, m.confidence_score,
                    (SELECT c.email FROM merchant_contacts c WHERE c.merchant_id = m.id LIMIT 1) as contact_email
@@ -172,16 +195,26 @@ def score_merchants(limit=100):
             # Always write urgency_score (additive column).  Whether the
             # pipeline *reads* it at sort time is still gated by
             # MERIDIAN_ENABLE_URGENCY_SORT downstream in deal_sourcing.
-            conn.execute(text("""
-                UPDATE merchants
-                SET opportunity_score = :score,
-                    urgency_score = :urgency
-                WHERE id = :merchant_id
-            """), {
-                "score": opportunity_score,
-                "urgency": urgency_score,
-                "merchant_id": merchant_id,
-            })
+            if supports_urgency_score:
+                conn.execute(text("""
+                    UPDATE merchants
+                    SET opportunity_score = :score,
+                        urgency_score = :urgency
+                    WHERE id = :merchant_id
+                """), {
+                    "score": opportunity_score,
+                    "urgency": urgency_score,
+                    "merchant_id": merchant_id,
+                })
+            else:
+                conn.execute(text("""
+                    UPDATE merchants
+                    SET opportunity_score = :score
+                    WHERE id = :merchant_id
+                """), {
+                    "score": opportunity_score,
+                    "merchant_id": merchant_id,
+                })
             save_event("merchant_opportunity_scored", {
                 "merchant": canonical_name,
                 "score": opportunity_score,

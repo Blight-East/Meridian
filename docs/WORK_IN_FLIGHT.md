@@ -42,6 +42,8 @@ Each entry has:
 - **2026-04-22** — Devin — [946eb69 Meridian tool-fix pack](https://github.com/Blight-East/Meridian/commit/946eb69) — merged to main. Provides `tool_invoked` telemetry + `@instrument` decorator + slash commands.
 - **2026-04-22** — Devin — PR #2 conversion-layer-upgrade — merged.
 - **2026-04-22** — founder — [5d02dd5 Fix contact_discovery stall](https://github.com/Blight-East/Meridian/commit/5d02dd5) — merged.
+- **2026-04-28** — Codex — Meridian stabilization sprint completed locally. Schema drift/runtime fallbacks, outreach parent-state sync, Gmail auth hardening, and contact-discovery seed unblock landed on `deploy-main`. Flat SQL migration `008_meridian_pipeline_stabilization.sql` is ready, but live DDL is still blocked by a stale open DB transaction that operators need to clear.
+- **2026-04-28** — claude-code — finished the leaf-level fix Codex left half-done: `UPDATE opportunity_outreach_actions SET status='sent', approval_state='sent'` for 5 opps (8/9/10/12/14) where `sent_at + gmail_thread_id` were set but `status` was still `draft_ready`. Eliminates the Telegram queue's incorrect "Send Outreach" suggestions for already-sent items. Also restarted the stopped `agentflux-telegram` PM2 service and verified payment-node (the Go product) was untouched by Codex's run.
 
 ## Conflicts to watch for
 

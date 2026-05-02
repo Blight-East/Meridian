@@ -220,6 +220,9 @@ def run_autonomous_sales_cycle(force_run=False):
     """
     logger.info(f"Initializing Autonomous Sales Cycle (Mode: {AUTONOMOUS_SALES_MODE}, Force: {force_run})...")
     _init_sales_tables()
+    from runtime.ops.outreach_execution import ensure_outreach_execution_tables
+
+    ensure_outreach_execution_tables()
     
     if not AUTONOMOUS_SALES_ENABLED and not force_run:
         logger.warning("AUTONOMOUS_SALES_ENABLED is false. Simulating cycle only.")
@@ -288,6 +291,11 @@ def run_autonomous_sales_cycle(force_run=False):
             JOIN merchants m ON mo.merchant_id = m.id
             LEFT JOIN signals s ON s.merchant_id = m.id
             WHERE mo.status IN ('pending_review', 'approved')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM opportunity_outreach_actions ooa
+                  WHERE ooa.opportunity_id = mo.id
+              )
               AND mo.merchant_id NOT IN (
                   SELECT merchant_id FROM sales_outreach_events
                   WHERE sent_at >= NOW() - INTERVAL '30 days'

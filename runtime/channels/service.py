@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from config.logging_config import get_logger
+from memory.structured.db import save_event
 from runtime.channels.base import DraftAction
-from runtime.channels.gmail_adapter import GmailAdapter
+from runtime.channels.gmail_adapter import GmailAdapter, GmailAuthError
 from runtime.channels.gmail_triage import sync_gmail_thread_intelligence
 from runtime.channels.policy import evaluate_send_policy
 from runtime.channels.reddit_adapter import RedditAdapter
@@ -20,6 +22,8 @@ from runtime.channels.store import (
 )
 from runtime.health.telemetry import clear_component_fields, get_component_state, heartbeat, record_component_state, utc_now_iso
 from runtime.safety.control_plane import create_action_envelope, inspect_untrusted_content
+
+logger = get_logger("channels.service")
 
 
 def _adapter(channel: str):
@@ -679,8 +683,31 @@ def run_gmail_triage_cycle(query: str | None = None, limit: int | None = None) -
     gmail_query = query or "label:INBOX newer_than:30d"
     gmail_limit = int(limit or 15)
     adapter = _adapter("gmail")
-    adapter.ensure_default_labels()
-    targets = adapter.list_targets(query=gmail_query, limit=gmail_limit)
+    try:
+        adapter.ensure_default_labels()
+        targets = adapter.list_targets(query=gmail_query, limit=gmail_limit)
+    except GmailAuthError as exc:
+        logger.error("Gmail triage auth failure: query=%s limit=%s error=%s", gmail_query, gmail_limit, exc)
+        save_event(
+            "gmail_auth_failure",
+            {
+                "operation": "triage",
+                "query": gmail_query,
+                "limit": gmail_limit,
+                "error": str(exc),
+            },
+        )
+        _record_channel_status(
+            "gmail",
+            "degraded",
+            gmail_status="degraded",
+            gmail_triage_status="degraded",
+            last_channel_error=str(exc),
+            last_gmail_triage_error=str(exc),
+            last_channel_action="triage_auth_error",
+            last_channel_action_at=utc_now_iso(),
+        )
+        raise
     triaged = 0
     merchant_distress = 0
     signals_created = 0

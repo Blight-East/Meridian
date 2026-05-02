@@ -143,7 +143,7 @@ def _extract_cluster_intelligence(cluster_id, cluster_topic, cluster_size, signa
                 (cluster_id, processor, industry, cluster_size, merchant_count, intelligence_summary)
             VALUES (:cid, :p, :i, :s, :m, :summ)
         """), {
-            "cid": str(cluster_id),
+            "cid": int(cluster_id),
             "p": dom_processor,
             "i": dom_industry,
             "s": cluster_size,
@@ -253,14 +253,16 @@ def run_cluster_investigation():
     try:
         with engine.connect() as conn:
             clusters = conn.execute(text("""
-                SELECT id, cluster_topic, cluster_size, signal_ids, trend_change, trend_status
-                FROM clusters
-                WHERE (cluster_size >= :size_threshold OR trend_change >= :trend_threshold)
-                  AND id::text NOT IN (
-                      SELECT cluster_id FROM cluster_intelligence
-                      WHERE created_at >= NOW() - INTERVAL '12 hours'
+                SELECT c.id, c.cluster_topic, c.cluster_size, c.signal_ids, c.trend_change, c.trend_status
+                FROM clusters c
+                WHERE (c.cluster_size >= :size_threshold OR c.trend_change >= :trend_threshold)
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM cluster_intelligence ci
+                      WHERE ci.cluster_id = c.id
+                        AND ci.created_at >= NOW() - INTERVAL '12 hours'
                   )
-                ORDER BY cluster_size DESC
+                ORDER BY c.cluster_size DESC
             """), {
                 "size_threshold": INVESTIGATION_THRESHOLD,
                 "trend_threshold": TREND_CHANGE_THRESHOLD

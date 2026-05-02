@@ -1,13 +1,57 @@
 import sys, os, time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from runtime.qualification.lead_qualifier import qualify_lead
 from memory.structured.db import save_event
 from config.logging_config import get_logger
 
 logger = get_logger("qualification")
-engine = create_engine("postgresql://postgres@127.0.0.1/agent_flux")
+from memory.structured.db import engine
+
+_SCHEMA_READY = False
+_QUALIFIED_LEAD_COLUMNS = None
+
+
+def _ensure_qualification_schema(force=False):
+    global _SCHEMA_READY
+    if _SCHEMA_READY and not force:
+        return
+
+    from runtime.ops.schema_migrations import with_advisory_lock as _with_lock
+
+    try:
+        with _with_lock("qualification_schema"), engine.connect() as conn:
+            conn.execute(text("SET lock_timeout = '10s'"))
+            conn.execute(text("SET statement_timeout = '60s'"))
+            conn.execute(text("""
+                ALTER TABLE qualified_leads
+                ADD COLUMN IF NOT EXISTS lead_priority DOUBLE PRECISION DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS lifecycle_status TEXT DEFAULT 'new',
+                ADD COLUMN IF NOT EXISTS merchant_name TEXT,
+                ADD COLUMN IF NOT EXISTS merchant_website TEXT,
+                ADD COLUMN IF NOT EXISTS industry TEXT,
+                ADD COLUMN IF NOT EXISTS location TEXT,
+                ADD COLUMN IF NOT EXISTS investigation_notes TEXT
+            """))
+            conn.commit()
+        _SCHEMA_READY = True
+    except Exception as exc:
+        logger.warning("Qualification schema repair deferred: %s", exc)
+
+
+def _qualified_lead_columns(conn, force=False):
+    global _QUALIFIED_LEAD_COLUMNS
+    if _QUALIFIED_LEAD_COLUMNS is not None and not force:
+        return _QUALIFIED_LEAD_COLUMNS
+    rows = conn.execute(text("""
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = 'qualified_leads'
+    """)).fetchall()
+    _QUALIFIED_LEAD_COLUMNS = {row[0] for row in rows}
+    return _QUALIFIED_LEAD_COLUMNS
+
 
 def get_cluster_size_for_signal(signal_id):
     with engine.connect() as conn:
@@ -15,22 +59,27 @@ def get_cluster_size_for_signal(signal_id):
             text("""
                 SELECT cluster_size 
                 FROM clusters 
-                WHERE signal_ids @> CAST(:sid AS jsonb)
+                WHERE :sid = ANY(signal_ids)
                 ORDER BY cluster_size DESC LIMIT 1
-            """), {"sid": f"[{signal_id}]"}
+            """), {"sid": int(signal_id)}
         ).scalar()
         return res if res else 0
 
 def run_qualification():
     start = time.time()
     qualified = 0
+    _ensure_qualification_schema()
 
     with engine.connect() as conn:
         rows = conn.execute(text("""
             SELECT o.id AS opp_id, o.signal_id, o.opportunity_score, s.content, s.source
             FROM opportunities o
             JOIN signals s ON s.id = o.signal_id
-            WHERE o.signal_id NOT IN (SELECT signal_id FROM qualified_leads)
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM qualified_leads ql
+                WHERE ql.signal_id = o.signal_id
+            )
             ORDER BY o.opportunity_score DESC
             LIMIT 50
         """))
@@ -56,16 +105,29 @@ def run_qualification():
             lead_priority = result["qualification_score"] + (cluster_size * 2) + revenue_bonus
 
             with engine.connect() as conn:
-                conn.execute(text("""
-                    INSERT INTO qualified_leads (signal_id, qualification_score, processor, revenue_detected, lead_priority, lifecycle_status)
-                    VALUES (:signal_id, :score, :processor, :revenue, :priority, 'new')
-                """), {
+                available_columns = _qualified_lead_columns(conn, force=True)
+                insert_columns = ["signal_id", "qualification_score", "processor", "revenue_detected"]
+                insert_values = [":signal_id", ":score", ":processor", ":revenue"]
+                insert_params = {
                     "signal_id": cand["signal_id"],
                     "score": result["qualification_score"],
                     "processor": result["processor"],
                     "revenue": result["revenue_detected"],
-                    "priority": lead_priority
-                })
+                }
+                if "lead_priority" in available_columns:
+                    insert_columns.append("lead_priority")
+                    insert_values.append(":priority")
+                    insert_params["priority"] = lead_priority
+                if "lifecycle_status" in available_columns:
+                    insert_columns.append("lifecycle_status")
+                    insert_values.append("'new'")
+                conn.execute(
+                    text(f"""
+                        INSERT INTO qualified_leads ({", ".join(insert_columns)})
+                        VALUES ({", ".join(insert_values)})
+                    """),
+                    insert_params,
+                )
                 conn.commit()
 
             save_event("lead_qualified", {

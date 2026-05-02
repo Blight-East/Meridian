@@ -12,7 +12,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from memory.structured.db import engine, save_event
-from runtime.channels.gmail_adapter import GmailAdapter, _headers_map, _payload_body
+from runtime.channels.gmail_adapter import (
+    GmailAdapter,
+    GmailAPIError,
+    GmailAuthError,
+    _headers_map,
+    _payload_body,
+)
 from runtime.channels.store import (
     get_channel_settings,
     get_gmail_thread_intelligence,
@@ -37,6 +43,7 @@ from runtime.intelligence.opportunity_queue_quality import (
 from runtime.ops.outreach_learning import ensure_outreach_learning_table, record_outreach_learning
 
 _lifecycle_logger = logging.getLogger("meridian.outreach_execution.lifecycle")
+_outreach_logger = logging.getLogger("meridian.outreach_execution")
 
 
 def _sync_deal_lifecycle_transition(
@@ -221,6 +228,7 @@ OUTREACH_STATE_ORDER = {
     "ignored": 8,
 }
 ACTIVE_OUTREACH_OPPORTUNITY_STATUSES = ("pending_review", "approved", "outreach_pending", "outreach_sent")
+TERMINAL_OPPORTUNITY_STATUSES = {"rejected", "converted"}
 PAGE_TYPE_PRIORITY = {
     "contact_page": 1,
     "about_page": 2,
@@ -242,6 +250,58 @@ PAGE_TYPE_LABELS = {
     "payment_page": "payment page",
 }
 DEEPENING_SEQUENCE_LABEL = "contact, about/team, footer/legal, and support/finance/payment pages"
+
+
+def _derive_parent_opportunity_status(outreach_row: dict, current_status: str | None) -> str:
+    current = str(current_status or "pending_review").strip().lower()
+    if current in TERMINAL_OPPORTUNITY_STATUSES:
+        return current
+
+    outreach_status = str((outreach_row or {}).get("status") or "").strip().lower()
+    approval_state = str((outreach_row or {}).get("approval_state") or "").strip().lower()
+    sent_at = (outreach_row or {}).get("sent_at")
+
+    if outreach_status in {"sent", "replied", "follow_up_needed", "won", "lost", "ignored"} or approval_state == "sent" or sent_at:
+        return "outreach_sent"
+    if outreach_status in {"awaiting_approval", "draft_ready"} or approval_state in {"approval_required", "approved"}:
+        return "outreach_pending"
+    return current
+
+
+def _sync_parent_opportunity_status(conn, outreach_row: dict | None) -> None:
+    opportunity_id = int((outreach_row or {}).get("opportunity_id") or 0)
+    if not opportunity_id:
+        return
+
+    parent = conn.execute(
+        text(
+            """
+            SELECT status
+            FROM merchant_opportunities
+            WHERE id = :opportunity_id
+            LIMIT 1
+            """
+        ),
+        {"opportunity_id": opportunity_id},
+    ).mappings().first()
+    if not parent:
+        return
+
+    current_status = parent.get("status") or "pending_review"
+    desired_status = _derive_parent_opportunity_status(outreach_row or {}, current_status)
+    if not desired_status or desired_status == current_status:
+        return
+
+    conn.execute(
+        text(
+            """
+            UPDATE merchant_opportunities
+            SET status = :status
+            WHERE id = :opportunity_id
+            """
+        ),
+        {"status": desired_status, "opportunity_id": opportunity_id},
+    )
 
 
 def _list_env(name: str) -> list[str]:
@@ -868,6 +928,30 @@ def send_outreach_for_opportunity(
                 "opportunity_id": int(opportunity_id),
                 "message": "Skipped: MERIDIAN_UPGRADE_DRY_RUN is enabled",
             }
+        except GmailAuthError as exc:
+            _outreach_logger.error("Gmail auth failure for opportunity %s: %s", opportunity_id, exc)
+            save_event(
+                "gmail_auth_failure",
+                {
+                    "operation": "outreach_send",
+                    "opportunity_id": int(opportunity_id),
+                    "contact_email": row.get("contact_email") or "",
+                    "error": str(exc),
+                },
+            )
+            return {"error": f"Gmail auth failure: {exc}"}
+        except GmailAPIError as exc:
+            _outreach_logger.error("Gmail send failure for opportunity %s: %s", opportunity_id, exc)
+            save_event(
+                "gmail_send_failure",
+                {
+                    "operation": "outreach_send",
+                    "opportunity_id": int(opportunity_id),
+                    "contact_email": row.get("contact_email") or "",
+                    "error": str(exc),
+                },
+            )
+            return {"error": f"Gmail send failed: {exc}"}
         sent_at = datetime.now(timezone.utc)
         follow_up_due_at = sent_at + timedelta(days=FOLLOW_UP_DAYS)
         metadata = _json_dict(row.get("metadata_json"))
@@ -986,7 +1070,7 @@ def sync_outreach_execution_state(limit: int = 100) -> dict:
                 SELECT *
                 FROM opportunity_outreach_actions
                 WHERE channel = 'gmail'
-                  AND status IN ('sent', 'follow_up_needed', 'replied')
+                  AND status IN ('awaiting_approval', 'draft_ready', 'sent', 'follow_up_needed', 'replied')
                 ORDER BY updated_at DESC
                 LIMIT :limit
                 """
@@ -1023,6 +1107,8 @@ def sync_outreach_execution_state(limit: int = 100) -> dict:
                         notes=current.get("notes") or "",
                         metadata=_json_dict(current.get("metadata_json")),
                     )
+                else:
+                    _sync_parent_opportunity_status(conn, current)
                 continue
 
             thread_id = current.get("gmail_thread_id") or ""
@@ -1043,6 +1129,28 @@ def sync_outreach_execution_state(limit: int = 100) -> dict:
                         if sent_at and internal_date and internal_date <= sent_at:
                             continue
                         latest_reply_at = max(latest_reply_at, internal_date) if latest_reply_at and internal_date else (internal_date or latest_reply_at)
+                except GmailAuthError as exc:
+                    _outreach_logger.error("Gmail auth failure during outreach sync for opportunity %s: %s", current["opportunity_id"], exc)
+                    save_event(
+                        "gmail_auth_failure",
+                        {
+                            "operation": "outreach_sync",
+                            "opportunity_id": int(current["opportunity_id"]),
+                            "gmail_thread_id": thread_id,
+                            "error": str(exc),
+                        },
+                    )
+                except GmailAPIError as exc:
+                    _outreach_logger.warning("Gmail sync request failed for opportunity %s: %s", current["opportunity_id"], exc)
+                    save_event(
+                        "gmail_sync_failure",
+                        {
+                            "operation": "outreach_sync",
+                            "opportunity_id": int(current["opportunity_id"]),
+                            "gmail_thread_id": thread_id,
+                            "error": str(exc),
+                        },
+                    )
                 except Exception:
                     pass
 
@@ -1120,6 +1228,9 @@ def sync_outreach_execution_state(limit: int = 100) -> dict:
                         outreach_status="follow_up_needed",
                     ),
                 )
+                continue
+
+            _sync_parent_opportunity_status(conn, current)
         conn.commit()
     return {"status": "ok", "rows_checked": rows_checked, "replied": replied, "follow_up_needed": follow_up_needed}
 
@@ -2970,6 +3081,8 @@ def _upsert_outreach_row(conn, **fields) -> dict:
         text("SELECT * FROM opportunity_outreach_actions WHERE opportunity_id = :opportunity_id"),
         {"opportunity_id": int(fields["opportunity_id"])},
     ).mappings().first()
+    if row:
+        _sync_parent_opportunity_status(conn, dict(row))
     return _serialize_outreach_row(dict(row)) if row else {}
 
 

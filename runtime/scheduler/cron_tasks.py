@@ -43,6 +43,9 @@ from runtime.intelligence.merchant_signal_classifier import run_merchant_signal_
 from runtime.intelligence.opportunity_scoring import score_merchants
 from runtime.intelligence.opportunity_trigger_engine import run_opportunity_trigger_engine
 from runtime.intelligence.signal_resurfacing import run_signal_resurfacing
+# signal_attribution_batch: not present on prod (2026-04-24); local-only.
+# Uncomment the import + registry entry below once the module ships.
+# from runtime.intelligence.signal_attribution_batch import run_signal_attribution_batch
 from runtime.channels.service import run_gmail_triage_cycle
 from runtime.ops.report_generator import generate_market_reports
 from runtime.ops.pipeline_diagnostics import run_pipeline_diagnostics
@@ -81,6 +84,7 @@ from runtime.ingestion.sources.stack_overflow_signals import run_stack_overflow_
 # Deal sourcing and sales imports
 from runtime.ops.deal_sourcing import run_deal_sourcing_cycle, promote_opportunities_to_pipeline
 from runtime.ops.autonomous_sales import run_autonomous_sales_cycle
+from runtime.scheduler.curated_outreach_proposer import run_curated_outreach_proposer
 
 # Historical ingestion
 from runtime.ingestion.historical_ingestion import run_historical_ingestion
@@ -341,6 +345,7 @@ TASK_REGISTRY = [
     {"name": "run_contact_discovery", "every": 20, "unit": "minutes", "fn": run_contact_discovery, "group": "contacts", "run_on_startup": True, "startup_priority": 4},
     {"name": "run_contact_verification", "every": 20, "unit": "minutes", "fn": run_contact_verification, "group": "contacts", "run_on_startup": True, "startup_priority": 5},
     {"name": "run_merchant_signal_classification", "every": 30, "unit": "minutes", "fn": run_merchant_signal_classification, "group": "intelligence"},
+    # {"name": "run_signal_attribution_batch", "every": 15, "unit": "minutes", "fn": lambda: run_signal_attribution_batch(limit=50), "group": "intelligence"},  # disabled: module missing on prod
     {"name": "run_brand_extraction", "every": 30, "unit": "minutes", "fn": run_brand_extraction, "group": "intelligence"},
     {"name": "merchant_entity_extraction", "every": 15, "unit": "minutes", "fn": lambda: extract_merchants_from_signals(limit=100), "group": "intelligence"},
     {"name": "run_merchant_graph_expansion", "every": 30, "unit": "minutes", "fn": run_merchant_graph_expansion, "group": "graph"},
@@ -389,6 +394,10 @@ TASK_REGISTRY = [
     {"name": "promote_opportunities_to_pipeline", "every": 30, "unit": "minutes", "fn": promote_opportunities_to_pipeline, "group": "sales"},
     {"name": "run_autonomous_sales_cycle", "every": 30, "unit": "minutes", "fn": run_autonomous_sales_cycle, "group": "sales"},
     {"name": "run_historical_ingestion", "every": 4, "unit": "hours", "fn": run_historical_ingestion, "group": "ingestion"},
+    # Controlled-validation mode: propose <=5 approval-gated outreach rows/day
+    # from cleanly-targeted merchant_opportunities. Runs every 6h with an
+    # internal daily cap, so restart/retry is idempotent.
+    {"name": "propose_daily_outreach_candidates", "every": 6, "unit": "hours", "fn": lambda: run_curated_outreach_proposer(max_per_day=5), "group": "sales", "run_on_startup": True, "startup_priority": 50},
 ]
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 from email.mime.text import MIMEText
 from pathlib import Path
@@ -18,6 +19,19 @@ GMAIL_API_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 DRIVE_API_BASE = "https://www.googleapis.com/upload/drive/v3/files"
 ENV_FILE_PATH = Path(__file__).resolve().parents[2] / ".env"
 ENV_FILE_VALUES = dotenv_values(ENV_FILE_PATH)
+logger = logging.getLogger("meridian.gmail_adapter")
+
+
+class GmailAPIError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int | None = None, operation: str = "", response_excerpt: str = ""):
+        super().__init__(message)
+        self.status_code = status_code
+        self.operation = operation
+        self.response_excerpt = response_excerpt
+
+
+class GmailAuthError(GmailAPIError):
+    pass
 
 
 def _env_value(*keys: str, default: str = "") -> str:
@@ -61,6 +75,14 @@ def _headers_map(payload: dict) -> dict:
     return headers
 
 
+def _response_excerpt(response) -> str:
+    try:
+        text = (response.text or "").strip()
+    except Exception:
+        text = ""
+    return text[:300]
+
+
 class GmailAdapter(ChannelAdapter):
     channel_name = "gmail"
 
@@ -74,26 +96,77 @@ class GmailAdapter(ChannelAdapter):
 
     def _token(self) -> str:
         if not self.client_id or not self.client_secret or not self.refresh_token:
-            raise RuntimeError("Google OAuth env is incomplete")
-        response = requests.post(
-            "https://oauth2.googleapis.com/token",
-            data={
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-                "refresh_token": self.refresh_token,
-                "grant_type": "refresh_token",
-            },
-            timeout=20,
-        )
-        response.raise_for_status()
+            raise GmailAuthError(
+                "Google OAuth env is incomplete",
+                operation="token_refresh",
+            )
+        try:
+            response = requests.post(
+                "https://oauth2.googleapis.com/token",
+                data={
+                    "client_id": self.client_id,
+                    "client_secret": self.client_secret,
+                    "refresh_token": self.refresh_token,
+                    "grant_type": "refresh_token",
+                },
+                timeout=20,
+            )
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            excerpt = _response_excerpt(response)
+            logger.error("Gmail OAuth refresh failed: status=%s body=%s", response.status_code, excerpt)
+            raise GmailAuthError(
+                f"Gmail OAuth refresh failed ({response.status_code})",
+                status_code=response.status_code,
+                operation="token_refresh",
+                response_excerpt=excerpt,
+            ) from exc
+        except requests.RequestException as exc:
+            logger.error("Gmail OAuth refresh request failed: %s", exc)
+            raise GmailAuthError(
+                f"Gmail OAuth refresh request failed: {exc}",
+                operation="token_refresh",
+            ) from exc
         payload = response.json()
-        return payload["access_token"]
+        access_token = payload.get("access_token")
+        if not access_token:
+            logger.error("Gmail OAuth refresh returned no access token")
+            raise GmailAuthError(
+                "Gmail OAuth refresh returned no access token",
+                status_code=response.status_code,
+                operation="token_refresh",
+                response_excerpt=_response_excerpt(response),
+            )
+        return access_token
 
     def _request(self, method: str, path: str, **kwargs):
         headers = kwargs.pop("headers", {})
         headers["Authorization"] = f"Bearer {self._token()}"
-        response = requests.request(method, f"{GMAIL_API_BASE}{path}", headers=headers, timeout=25, **kwargs)
-        response.raise_for_status()
+        try:
+            response = requests.request(method, f"{GMAIL_API_BASE}{path}", headers=headers, timeout=25, **kwargs)
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            excerpt = _response_excerpt(response)
+            error_cls = GmailAuthError if response.status_code in {401, 403} else GmailAPIError
+            logger.error(
+                "Gmail API request failed: method=%s path=%s status=%s body=%s",
+                method,
+                path,
+                response.status_code,
+                excerpt,
+            )
+            raise error_cls(
+                f"Gmail API request failed for {method} {path} ({response.status_code})",
+                status_code=response.status_code,
+                operation=f"{method} {path}",
+                response_excerpt=excerpt,
+            ) from exc
+        except requests.RequestException as exc:
+            logger.error("Gmail API request transport failure: method=%s path=%s error=%s", method, path, exc)
+            raise GmailAPIError(
+                f"Gmail API request failed for {method} {path}: {exc}",
+                operation=f"{method} {path}",
+            ) from exc
         return response.json() if response.content else {}
 
     def _label_lookup(self) -> dict[str, str]:
