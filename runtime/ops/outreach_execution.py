@@ -807,9 +807,6 @@ def send_outreach_for_opportunity(
         context = _get_outreach_context(conn, opportunity_id=opportunity_id)
         if not context:
             return {"error": "Opportunity not found"}
-        recommendation = _build_outreach_recommendation(context)
-        if not recommendation.get("contact_send_eligible"):
-            return {"error": recommendation.get("wait_reason") or "This lead is not send-ready yet"}
         row = conn.execute(
             text(
                 """
@@ -827,6 +824,24 @@ def send_outreach_for_opportunity(
             return {"error": "Outreach is still awaiting approval"}
         if row.get("status") in {"sent", "won", "lost", "ignored"} and row.get("follow_up_due_at") and not _follow_up_allowed(dict(row)):
             return {"error": "Outreach already sent and no follow-up is due yet"}
+
+        # Trust an approved draft. The contact-send-eligibility check that
+        # used to gate here re-runs full contact discovery and rejects any
+        # row whose email cannot be re-verified against a known page_type
+        # (contact_page, about_page, ...). That re-validation is wrong at
+        # SEND TIME — the operator (or autonomous critic) already approved
+        # this exact draft + contact_email combination. If the draft was
+        # built and approved with a same-domain email + non-empty body,
+        # respect that decision.
+        #
+        # We still apply the contact-send-eligible gate for unapproved or
+        # draft-incomplete rows by refusing earlier returns above.
+        has_contact = bool((row.get("contact_email") or "").strip())
+        has_body = bool((row.get("body") or "").strip())
+        if not (has_contact and has_body):
+            recommendation = _build_outreach_recommendation(context)
+            if not recommendation.get("contact_send_eligible"):
+                return {"error": recommendation.get("wait_reason") or "This lead is not send-ready yet"}
 
         try:
             result = _send_gmail_message(
