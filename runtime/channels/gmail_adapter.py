@@ -234,9 +234,21 @@ class GmailAdapter(ChannelAdapter):
             references = draft.metadata.get("references") or draft.metadata.get("message_id")
             message["References"] = references
         raw = base64.urlsafe_b64encode(message.as_bytes()).decode("utf-8")
-        payload = {"raw": raw, "threadId": draft.thread_id}
+        # Only include threadId when we actually have a prior thread to reply
+        # in. Gmail returns 404 for empty-string threadId, which silently
+        # blocks all initial outreach (the row's gmail_thread_id is "" until
+        # the first send completes). Same for label application below.
+        payload: dict = {"raw": raw}
+        if draft.thread_id:
+            payload["threadId"] = draft.thread_id
         result = self._request("POST", "/messages/send", json=payload)
-        self._apply_labels(draft.thread_id, ["bot-sent", "bot-replied"])
+        # After a fresh send, the response carries the new threadId; use that
+        # for labelling. Falling through to the empty draft.thread_id would
+        # 404 the label-apply call and surface a confusing error after a
+        # successful send.
+        send_thread_id = result.get("threadId") or draft.thread_id
+        if send_thread_id:
+            self._apply_labels(send_thread_id, ["bot-sent", "bot-replied"])
         if _upgrade is not None:
             try:
                 _upgrade.record_funnel_event(
