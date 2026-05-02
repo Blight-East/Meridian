@@ -1597,6 +1597,8 @@ def run_contact_discovery():
     It only runs for high-value leads blocked on contact quality.
     """
     _ensure_contact_discovery_schema()
+    from runtime.ops.deal_sourcing import _infer_distress_from_content
+
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -1635,12 +1637,66 @@ def run_contact_discovery():
         ).mappings().fetchall()
 
         eligible = []
+        seen_merchant_ids = set()
         for row in rows:
             context = _load_deepening_context(conn, row["merchant_id"], opportunity_id=row["opportunity_id"])
             if context.get("eligible"):
                 context["lifecycle_priority"] = float(row.get("lifecycle_priority") or 0.0)
                 context["lifecycle_contact_trust"] = int(row.get("lifecycle_contact_trust") or 0)
                 eligible.append(context)
+                seen_merchant_ids.add(int(row["merchant_id"]))
+
+        # Seed contact discovery for scored opportunities that have not yet
+        # reached merchant_opportunities because the bridge is blocked on
+        # missing contacts. This keeps contact discovery from depending on a
+        # row that cannot exist until a contact is found.
+        seed_rows = conn.execute(
+            text(
+                """
+                SELECT DISTINCT ON (s.merchant_id)
+                    s.merchant_id,
+                    o.id AS source_opportunity_id,
+                    o.opportunity_score,
+                    COALESCE(m.distress_score, 0) AS distress_score,
+                    s.content
+                FROM opportunities o
+                JOIN signals s ON o.signal_id = s.id
+                JOIN merchants m ON s.merchant_id = m.id
+                WHERE o.opportunity_score >= 50
+                  AND s.merchant_id IS NOT NULL
+                  AND COALESCE(m.domain, '') != ''
+                  AND COALESCE(m.status, 'active') NOT IN ('provisional', 'rejected')
+                  AND m.id NOT IN (
+                      SELECT merchant_id
+                      FROM merchant_opportunities
+                      WHERE merchant_id IS NOT NULL
+                        AND created_at >= NOW() - INTERVAL '14 days'
+                        AND status NOT IN ('rejected')
+                  )
+                ORDER BY s.merchant_id, o.opportunity_score DESC, o.created_at DESC
+                LIMIT 150
+                """
+            )
+        ).mappings().fetchall()
+        for row in seed_rows:
+            merchant_id = int(row.get("merchant_id") or 0)
+            if not merchant_id or merchant_id in seen_merchant_ids:
+                continue
+            distress_topic = _infer_distress_from_content(row.get("content") or "")
+            if not distress_topic:
+                continue
+            context = _load_deepening_context(
+                conn,
+                merchant_id,
+                allow_without_opportunity=True,
+                distress_topic=distress_topic,
+            )
+            if not context.get("eligible"):
+                continue
+            context["lifecycle_priority"] = float(row.get("opportunity_score") or 0.0)
+            context["lifecycle_contact_trust"] = 0
+            eligible.append(context)
+            seen_merchant_ids.add(merchant_id)
 
     if not eligible:
         logger.info("No merchants eligible for merchant_contact_deepening")
