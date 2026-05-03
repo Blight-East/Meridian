@@ -22,6 +22,49 @@ MAX_OUTREACH_PER_CYCLE = 10
 AUTONOMOUS_SALES_ENABLED = True
 AUTONOMOUS_SALES_MODE = "live"
 
+# ── Learning Loop: Read Side ──────────────────────────────────────
+# Threshold for "this merchant is dead, stop drafting." Reads from
+# learning_feedback_ledger (outcomes captured by update_outreach_outcome).
+# Conservative defaults: a merchant has to lose+ignored at least
+# LEARNING_NEGATIVE_THRESHOLD times within LEARNING_LOOKBACK_DAYS
+# with zero wins before we skip. With 1 outcome row in the ledger
+# today, this fires zero times. As outcomes accumulate, it stops the
+# system from re-drafting outreach for already-dead leads.
+LEARNING_NEGATIVE_THRESHOLD = 2
+LEARNING_LOOKBACK_DAYS = 60
+
+
+def _merchant_outcome_history(conn, *, merchant_id, merchant_domain):
+    """Return (wins, losses) for this merchant in the recent ledger window.
+
+    Reads learning_feedback_ledger (the view; trust-filter applies).
+    A row matches if its merchant_id_candidate or merchant_domain_candidate
+    matches AND outcome_type is one of (won, lost, ignored).
+    """
+    try:
+        row = conn.execute(
+            text(
+                """
+                SELECT
+                  count(*) FILTER (WHERE outcome_type = 'won') AS wins,
+                  count(*) FILTER (WHERE outcome_type IN ('lost', 'ignored')) AS losses
+                FROM learning_feedback_ledger
+                WHERE (
+                    (:mid IS NOT NULL AND merchant_id_candidate = :mid)
+                    OR (:domain <> '' AND merchant_domain_candidate = :domain)
+                )
+                  AND outcome_type IN ('won', 'lost', 'ignored')
+                  AND created_at > NOW() - (:lookback || ' days')::interval
+                """
+            ),
+            {"mid": merchant_id, "domain": merchant_domain or "", "lookback": str(LEARNING_LOOKBACK_DAYS)},
+        ).mappings().first()
+        return int((row or {}).get("wins") or 0), int((row or {}).get("losses") or 0)
+    except Exception as exc:
+        # Fail open: if ledger read fails, do not block drafting.
+        logger.warning(f"learning_ledger_read_failed merchant={merchant_id}/{merchant_domain}: {exc}")
+        return 0, 0
+
 # ── Entity Type Filter ────────────────────────────────────────────
 # Domains and names that are banks, processors, platforms, or VCs —
 # NOT real merchant targets. These appear in distress threads because
@@ -424,13 +467,39 @@ def run_autonomous_sales_cycle(force_run=False):
                 # Leave status as pending/approved for tomorrow
                 break
 
+            # ── Learning loop: skip merchants the ledger says are dead ──
+            # Read the outcome history. If this merchant has racked up
+            # LEARNING_NEGATIVE_THRESHOLD+ losses in the lookback window
+            # with zero wins, drafting more outreach is wasted effort
+            # AND brand damage. The check is cheap (indexed query),
+            # fail-open (read failure does not block), and emits
+            # telemetry so you can see the learning loop firing.
+            wins, losses = _merchant_outcome_history(
+                conn, merchant_id=merchant_id, merchant_domain=domain
+            )
+            if losses >= LEARNING_NEGATIVE_THRESHOLD and wins == 0:
+                logger.info(
+                    f"learning_skip_dead_merchant opp={opp_id} domain={domain} "
+                    f"losses={losses} wins={wins} lookback={LEARNING_LOOKBACK_DAYS}d"
+                )
+                save_event("autonomous_sales_skip_learning_signal", {
+                    "opportunity_id": opp_id,
+                    "merchant_id": merchant_id,
+                    "merchant_domain": domain,
+                    "losses": losses,
+                    "wins": wins,
+                    "lookback_days": LEARNING_LOOKBACK_DAYS,
+                    "reason": "merchant_marked_lost_or_ignored_repeatedly",
+                })
+                continue
+
             # Use the intelligent MCP operator tools to draft and approve.
             try:
                 from runtime.ops.operator_commands import (
-                    draft_outreach_for_opportunity_command, 
+                    draft_outreach_for_opportunity_command,
                     approve_outreach_for_opportunity_command
                 )
-                
+
                 # If not drafted yet, draft it
                 if not draft or status == 'pending_review':
                     logger.info(f"Generating intelligent draft for {opp_id} ({domain})...")
