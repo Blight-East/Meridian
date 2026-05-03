@@ -562,17 +562,32 @@ def get_deal_by_domain(merchant_domain: str) -> dict[str, Any] | None:
 
 
 def list_active_deals(*, limit: int = 20) -> list[dict[str, Any]]:
-    """List active (non-terminal) deals ordered by priority."""
-    terminal = {DealStage.outcome_won.value, DealStage.outcome_lost.value, DealStage.outcome_ignored.value}
-    placeholders = ", ".join(f":t{i}" for i in range(len(terminal)))
+    """List active (non-terminal) deals ordered by priority.
+
+    Filters out deals whose underlying merchant_opportunity has been
+    revoked / rejected / converted. Without this cross-table check, the
+    morning brief and action queue continue surfacing opportunity IDs
+    long after the operator has explicitly killed them — `revoke` only
+    sets `merchant_opportunities.status` and does not cascade to
+    `deal_lifecycle.current_stage`. Observed on prod 2026-05-02 after
+    operationally revoking 11 bug-batch opps; the brief kept showing
+    them as `Send Outreach` actions.
+    """
+    terminal_stages = {DealStage.outcome_won.value, DealStage.outcome_lost.value, DealStage.outcome_ignored.value}
+    terminal_mo_statuses = {"rejected", "revoked", "converted", "lost"}
+    stage_placeholders = ", ".join(f":t{i}" for i in range(len(terminal_stages)))
+    mo_placeholders = ", ".join(f":m{i}" for i in range(len(terminal_mo_statuses)))
     params: dict[str, Any] = {"limit": int(limit)}
-    params.update({f"t{i}": v for i, v in enumerate(terminal)})
+    params.update({f"t{i}": v for i, v in enumerate(terminal_stages)})
+    params.update({f"m{i}": v for i, v in enumerate(terminal_mo_statuses)})
     with engine.connect() as conn:
         rows = conn.execute(
             text(f"""
-                SELECT * FROM deal_lifecycle
-                WHERE current_stage NOT IN ({placeholders})
-                ORDER BY priority_score DESC, updated_at DESC
+                SELECT dl.* FROM deal_lifecycle dl
+                LEFT JOIN merchant_opportunities mo ON mo.id = dl.opportunity_id
+                WHERE dl.current_stage NOT IN ({stage_placeholders})
+                  AND (mo.status IS NULL OR mo.status NOT IN ({mo_placeholders}))
+                ORDER BY dl.priority_score DESC, dl.updated_at DESC
                 LIMIT :limit
             """),
             params,

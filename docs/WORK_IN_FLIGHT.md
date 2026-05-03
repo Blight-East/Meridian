@@ -44,6 +44,12 @@ Each entry has:
 - **2026-04-22** — founder — [5d02dd5 Fix contact_discovery stall](https://github.com/Blight-East/Meridian/commit/5d02dd5) — merged.
 - **2026-04-28** — Codex — Meridian stabilization sprint completed locally. Schema drift/runtime fallbacks, outreach parent-state sync, Gmail auth hardening, and contact-discovery seed unblock landed on `deploy-main`. Flat SQL migration `008_meridian_pipeline_stabilization.sql` is ready, but live DDL is still blocked by a stale open DB transaction that operators need to clear.
 - **2026-04-28** — claude-code — finished the leaf-level fix Codex left half-done: `UPDATE opportunity_outreach_actions SET status='sent', approval_state='sent'` for 5 opps (8/9/10/12/14) where `sent_at + gmail_thread_id` were set but `status` was still `draft_ready`. Eliminates the Telegram queue's incorrect "Send Outreach" suggestions for already-sent items. Also restarted the stopped `agentflux-telegram` PM2 service and verified payment-node (the Go product) was untouched by Codex's run.
+- **2026-04-29** — claude-code — [PR #13 — `draft outreach for X` Telegram command](https://github.com/Blight-East/Meridian/pull/13) — merged. Closes the operator gap where `ELIGIBILITY_OPERATOR_REVIEW_ONLY` opps had no command path; exposes `draft_outreach_for_opportunity_command(allow_best_effort=True)` via Telegram regex. Emits `operator_draft_override` event for tracking override rate.
+- **2026-05-02** — claude-code — [PR #14 — trust approved drafts at send + Gmail threadId guard](https://github.com/Blight-East/Meridian/pull/14) — merged + deployed to prod. `send_outreach_for_opportunity` no longer re-validates contact_send_eligible when row already has approval + contact + body. Empty `threadId` no longer 404s `/messages/send`. Both bugs combined had blocked every initial outreach send since 4/19.
+- **2026-05-02** — claude-code — [PR #15 — `#` prefix in operator regex](https://github.com/Blight-East/Meridian/pull/15) — merged + deployed. All 16 `(?P<opportunity_id>\d+)` captures now accept optional `#`. Mechanical fix that converts the most-common LLM-hallucination trigger ("Review reply #126" no longer falls through to LLM) into a clean operator success.
+- **2026-05-02** — claude-code — [PR #16 — restore english-noise filter on merchant entity extraction](https://github.com/Blight-East/Meridian/pull/16) — merged + deployed. Filter was dropped during the 4/28 sprint; expanded from ~50 to 181 entries to cover article-text artifacts (japan, policy, exactly, learning, account, …). Prevents the next batch of garbage merchant_opportunities. Operationally on prod 14 bug-batch opps revoked + 3 bounce-suspected sends marked lost.
+- **2026-05-02** — Codex (committed by claude-code) — [PR #17 — pipeline stabilization sprint](https://github.com/Blight-East/Meridian/pull/17) — merged + deployed. The full 15-file Codex sprint (992 LOC) committed properly with attribution. Migration 008 applied on prod. Schema-mismatch errors went from ~30/30min to 0.
+- **2026-05-02** — claude-code — operational on prod (159.65.45.64): `GMAIL_SENDER_EMAIL=hello@payflux.dev` (correct account), `GOOGLE_REFRESH_TOKEN` updated, local Telegram bot stopped (was crash-looping due to duplicate-instance conflict with prod), `redis-cli del agent_flux:telegram_bot_lock` to clear stale singleton. All 5 prod services healthy.
 
 ## Conflicts to watch for
 
@@ -66,8 +72,8 @@ Each entry has:
 
 ## Review queue (PRs waiting on operator action)
 
-- [PR #6 — LLM provider adapter](https://github.com/Blight-East/Meridian/pull/6) — **URGENT** (Anthropic billing out of credits; Meridian degraded in prod). Review verdict from claude-code-guide pending inline in the ongoing session.
-- [PR #4 — Fix SELECT DISTINCT + urgency_score](https://github.com/Blight-East/Meridian/pull/4) — small bug fix, low stakes.
+- [PR #4 — Fix SELECT DISTINCT + urgency_score](https://github.com/Blight-East/Meridian/pull/4) — superseded by PR #17 (Codex sprint shipped a more comprehensive fix in `runtime/ops/deal_sourcing.py`). Safe to close.
+- ~~PR #6 (LLM provider adapter)~~ — merged 2026-04-24.
 
 ## Notes for agents
 
