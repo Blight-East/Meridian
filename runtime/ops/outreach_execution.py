@@ -1414,6 +1414,69 @@ def update_outreach_outcome(opportunity_id: int, outcome_status: str, notes: str
             outreach_status=normalized,
         ),
     )
+    # Close the learning feedback loop. The daily intelligence report
+    # queries learning_feedback_ledger for "outcomes recorded"; without
+    # this insert the alert fires every day with "0 outcomes / N decisions"
+    # because outcomes were captured everywhere EXCEPT this ledger.
+    # Antigravity autonomy audit (2026-05-02) named this gap as the
+    # weakest factor in Meridian's perception × reasoning × action ×
+    # learning × safety equation — closing the write side here. Reading
+    # the ledger to influence next-action selection is a separate fix.
+    if context:
+        _reward_score_by_outcome = {"won": 1.0, "lost": -0.5, "ignored": 0.0}
+        _ledger_payload = {
+            "merchant_domain": context.get("merchant_domain") or "",
+            "processor": context.get("processor") or "",
+            "distress_type": context.get("distress_type") or "",
+            "selected_play": context.get("selected_play") or "",
+            "outreach_type": context.get("outreach_type") or "initial_outreach",
+            "rewrite_style": context.get("rewrite_style") or "standard",
+            "operator_notes": (notes or "")[:500],
+        }
+        try:
+            with engine.connect() as conn:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO learning_feedback_ledger_raw (
+                            signal_id, source, merchant_id_candidate, merchant_domain_candidate,
+                            opportunity_id, decision_type, decision_payload_json,
+                            outcome_type, outcome_value, outcome_at, reward_score, notes
+                        )
+                        VALUES (
+                            :signal_id, :source, :merchant_id, :merchant_domain,
+                            :opportunity_id, :decision_type, CAST(:payload AS JSONB),
+                            :outcome_type, :outcome_value, NOW(), :reward_score, :notes
+                        )
+                        """
+                    ),
+                    {
+                        "signal_id": context.get("signal_id"),
+                        "source": "outreach_outcome",
+                        "merchant_id": context.get("merchant_id"),
+                        "merchant_domain": context.get("merchant_domain") or "",
+                        "opportunity_id": int(opportunity_id),
+                        "decision_type": "outreach_outcome",
+                        "payload": json.dumps(_ledger_payload),
+                        "outcome_type": normalized,
+                        "outcome_value": _reward_score_by_outcome.get(normalized, 0.0),
+                        "reward_score": _reward_score_by_outcome.get(normalized, 0.0),
+                        "notes": (notes or "")[:500],
+                    },
+                )
+                conn.commit()
+            save_event(
+                "learning_feedback_ledger_appended",
+                {"opportunity_id": int(opportunity_id), "outcome_type": normalized, "reward_score": _reward_score_by_outcome.get(normalized, 0.0)},
+            )
+        except Exception as exc:
+            # Ledger write must never break outcome capture. Surface the
+            # failure as an event so it shows up in the same telemetry
+            # surface the alert is monitoring.
+            save_event(
+                "learning_feedback_ledger_write_failed",
+                {"opportunity_id": int(opportunity_id), "outcome_type": normalized, "error": str(exc)[:300]},
+            )
     return {
         "status": "ok",
         "opportunity_id": int(opportunity_id),
